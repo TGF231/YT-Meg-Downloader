@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from .config import AUDIO_FORMATS, BROWSERS, AppConfig
-from .downloader import DownloadEngine, EngineCallbacks
+from .downloader import DownloadEngine, EngineCallbacks, check_cookies
 from .organizer import TrackTags, sanitize_component
 from .store import QueueStats, QueueStore
 
@@ -439,13 +439,51 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Erro", f"Não foi possível usar o diretório:\n{exc}")
             return
 
+        # Salva a escolha real do usuário antes de um eventual rebaixamento
+        # temporário para "sem cookies".
         self._save_settings()
+
+        # Verifica os cookies agora: descobrir isso no meio de uma playlist longa
+        # custa tempo e não tem conserto automático.
+        if not self._confirm_cookies(cfg):
+            return
+
+        cfg = self.current_config()  # pode ter mudado no diálogo de cookies
         self.engine = DownloadEngine(cfg, store, self.bridge.callbacks())
         self.thread = EngineThread(self.engine, force_reextract)
         self.thread.finished.connect(self._on_thread_finished)
         self._append_log("info", f"Fila persistente: {cfg.db_path()}")
         self._update_controls(running=True)
         self.thread.start()
+
+    def _confirm_cookies(self, cfg: AppConfig) -> bool:
+        """Testa os cookies. Deixa o usuário seguir sem eles se falharem."""
+        problem = check_cookies(cfg)
+        if problem is None:
+            return True
+
+        for line in problem.splitlines():
+            self._append_log("error", line)
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("Problema com os cookies")
+        box.setText("Não foi possível carregar os cookies configurados.")
+        box.setInformativeText(problem)
+        without = box.addButton("Continuar sem cookies", QMessageBox.AcceptRole)
+        box.addButton("Cancelar", QMessageBox.RejectRole)
+        box.setDefaultButton(without)
+        box.exec()
+
+        if box.clickedButton() is not without:
+            self._append_log("warn", "Início cancelado por causa dos cookies.")
+            return False
+
+        # Vale só para esta execução; a configuração salva não é alterada.
+        self._select_data(self.cookies_mode, "none")
+        self._update_cookie_widgets()
+        self._append_log("warn", "Seguindo sem cookies nesta execução.")
+        return True
 
     def _on_pause_toggle(self) -> None:
         if self.engine is None:

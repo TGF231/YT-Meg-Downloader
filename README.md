@@ -105,8 +105,31 @@ Cookies de uma conta logada reduzem bastante a chance de bloqueio e são
 necessários para playlists privadas. Duas opções:
 
 - **Arquivo `cookies.txt`** no formato Netscape (extensões de navegador geram).
-- **Direto do navegador** — o `yt-dlp` lê o perfil instalado. Feche o navegador
-  antes, senão o banco de cookies fica travado.
+- **Direto do navegador** — o `yt-dlp` lê o perfil instalado.
+
+Os cookies são testados assim que você clica em **Iniciar**, antes de qualquer
+requisição: se falharem, a ferramenta explica o motivo e oferece seguir sem
+eles naquela execução.
+
+#### `Could not copy Chrome cookie database`
+
+O banco de cookies fica travado enquanto o navegador está aberto.
+
+1. Feche o navegador por completo, inclusive os processos em segundo plano. No
+   Windows, confira o Gerenciador de Tarefas: a opção *continuar executando
+   apps em segundo plano* mantém o Chrome vivo depois de fechar a janela.
+2. Se ainda falhar no Windows: a partir do Chrome 127 os cookies são guardados
+   com uma criptografia que o `yt-dlp` não consegue abrir. Use o **Firefox** ou
+   um arquivo `cookies.txt`.
+3. Para exportar o `cookies.txt`, use uma extensão que gere o formato Netscape,
+   salve o arquivo e escolha **Arquivo cookies.txt** na interface.
+
+### Playlists, mixes e rádios
+
+URLs de mix ou rádio (o `list=` começa com `RD`) são geradas dinamicamente pelo
+YouTube e podem devolver menos faixas do que o aplicativo mostra. Se a contagem
+extraída vier bem abaixo do esperado, salve a playlist na sua biblioteca e use
+a URL da playlist salva.
 
 ## Detecção de bloqueio
 

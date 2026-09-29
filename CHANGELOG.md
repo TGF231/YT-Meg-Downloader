@@ -3,6 +3,23 @@
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o
 versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
+## [1.0.1] - 2026-09-29
+
+### Corrigido
+
+- Falha ao carregar cookies (por exemplo, `Could not copy Chrome cookie
+  database`, quando o navegador está aberto) encerrava a execução com
+  "Erro inesperado: failed to load cookies", sem dizer o que fazer. Agora os
+  cookies são testados antes de extrair a playlist e a mensagem explica o
+  passo a passo: fechar o navegador, usar o Firefox ou exportar um
+  `cookies.txt`.
+- Uma falha de cookie no meio da fila não é mais contada como falha da faixa.
+
+### Adicionado
+
+- Diálogo ao iniciar quando os cookies não carregam, com a opção de seguir sem
+  cookies só naquela execução, sem alterar a configuração salva.
+
 ## [1.0.0] - 2026-09-29
 
 Primeira versão.
@@ -29,4 +46,5 @@ Primeira versão.
 - Interface PySide6 com contadores, barras de progresso, log colorido, árvore
   da estrutura de pastas criada e controles de pausar, retomar e parar.
 
+[1.0.1]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.0.1
 [1.0.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.0.0

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import random
 import re
+import sys
 import threading
 import time
 import traceback
@@ -24,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from yt_dlp import YoutubeDL
+from yt_dlp.cookies import CookieLoadError, load_cookies
 from yt_dlp.utils import DownloadError, ExtractorError
 
 from .config import AppConfig
@@ -86,8 +88,105 @@ def classify_error(message: str) -> str:
     return ERROR_TRANSIENT
 
 
+# Navegadores baseados em Chromium: o banco de cookies fica travado enquanto o
+# navegador está aberto, e no Windows o Chrome 127+ usa uma criptografia que o
+# yt-dlp não consegue abrir.
+CHROMIUM_BROWSERS = {"chrome", "chromium", "edge", "brave", "opera", "vivaldi"}
+
+
+def describe_cookie_failure(cfg: "AppConfig", details: List[str]) -> str:
+    """Mensagem acionável para uma falha ao carregar cookies."""
+    detail = " ".join(d.strip() for d in details if d.strip())
+    lines: List[str] = []
+
+    if cfg.cookies_mode == "browser":
+        browser = (cfg.cookies_browser or "").lower()
+        lines.append(f"Não foi possível ler os cookies do {cfg.cookies_browser}.")
+        if browser in CHROMIUM_BROWSERS:
+            lines.append(
+                f"1) Feche o {cfg.cookies_browser} por completo, inclusive os processos em "
+                "segundo plano (no Windows, veja o Gerenciador de Tarefas; a opção "
+                '"continuar executando apps em segundo plano" mantém o navegador vivo).'
+            )
+            if sys.platform == "win32":
+                lines.append(
+                    "2) Se continuar falhando: a partir do Chrome 127 o Windows guarda os "
+                    "cookies com uma criptografia que o yt-dlp não consegue abrir. Nesse "
+                    "caso use o Firefox ou um arquivo cookies.txt."
+                )
+            else:
+                lines.append(
+                    "2) Se continuar falhando, use o Firefox ou um arquivo cookies.txt."
+                )
+        else:
+            lines.append(
+                f"Feche o {cfg.cookies_browser} e confirme que o perfil padrão existe "
+                "nesta máquina."
+            )
+        lines.append(
+            "3) Para exportar um cookies.txt, use uma extensão de navegador que gere o "
+            "formato Netscape, salve o arquivo e escolha 'Arquivo cookies.txt' aqui."
+        )
+    elif cfg.cookies_mode == "file":
+        lines.append(f"Não foi possível ler o arquivo de cookies: {cfg.cookies_file}")
+        lines.append(
+            "Confirme que o arquivo existe, que está no formato Netscape (a primeira "
+            "linha costuma ser '# Netscape HTTP Cookie File') e que não está aberto "
+            "em outro programa."
+        )
+    else:
+        lines.append("Falha ao carregar cookies.")
+
+    lines.append(
+        "Você também pode seguir sem cookies: aumente o intervalo entre downloads, "
+        "porque a chance de bloqueio fica maior."
+    )
+    if detail:
+        lines.append(f"Detalhe do yt-dlp: {detail}")
+    return "\n".join(lines)
+
+
+def check_cookies(cfg: "AppConfig") -> Optional[str]:
+    """Carrega os cookies configurados sem tocar na rede.
+
+    Retorna None se estiver tudo certo, ou a mensagem de erro já explicada.
+    Roda antes da extração para não descobrir o problema no meio da playlist.
+    """
+    if cfg.cookies_mode == "none":
+        return None
+
+    details: List[str] = []
+    # Só interessam avisos e erros; o yt-dlp também loga o andamento normal.
+    probe_logger = _YdlLogger(
+        lambda level, message: details.append(message) if level in ("warn", "error") else None
+    )
+    auth: Dict[str, Any] = {}
+    if cfg.cookies_mode == "file" and cfg.cookies_file:
+        auth["cookiefile"] = str(Path(cfg.cookies_file).expanduser())
+    elif cfg.cookies_mode == "browser" and cfg.cookies_browser:
+        auth["cookiesfrombrowser"] = (cfg.cookies_browser, None, None, None)
+    if not auth:
+        return None
+
+    try:
+        with YoutubeDL({"quiet": True, "no_warnings": True, "logger": probe_logger}) as ydl:
+            jar = load_cookies(auth.get("cookiefile"), auth.get("cookiesfrombrowser"), ydl)
+    except Exception:
+        return describe_cookie_failure(cfg, details)
+
+    if len(jar) == 0:
+        return describe_cookie_failure(
+            cfg, details + ["nenhum cookie foi encontrado na origem escolhida"]
+        )
+    return None
+
+
 class Stopped(Exception):
     """Parada solicitada pelo usuário."""
+
+
+class CookieError(Exception):
+    """Cookies configurados não puderam ser lidos: é problema de configuração."""
 
 
 class BlockedTooOften(Exception):
@@ -312,6 +411,16 @@ class DownloadEngine:
 
     # ------------------------------------------------------------- extração
 
+    def _verify_cookies(self) -> None:
+        if self.cfg.cookies_mode == "none":
+            self._log("info", "Sem cookies: o risco de bloqueio é maior em playlists longas.")
+            return
+        self._status("Verificando cookies...")
+        problem = check_cookies(self.cfg)
+        if problem:
+            raise CookieError(problem)
+        self._log("info", "Cookies carregados.")
+
     def _extract_playlist(self, force: bool = False) -> None:
         url = self.cfg.playlist_url.strip()
         existing = self.store.get_playlist()
@@ -424,7 +533,7 @@ class DownloadEngine:
         with YoutubeDL(self._download_opts(outtmpl)) as ydl:
             try:
                 result = ydl.process_ie_result(payload, download=True)
-            except Stopped:
+            except (Stopped, CookieLoadError):
                 raise
             except Exception as exc:
                 if classify_error(str(exc)) != ERROR_TRANSIENT:
@@ -481,6 +590,7 @@ class DownloadEngine:
         reason = "Concluído"
         try:
             Path(self.cfg.output_dir).expanduser().mkdir(parents=True, exist_ok=True)
+            self._verify_cookies()
             self._extract_playlist(force=force_reextract)
             self._process_queue()
             stats = self.store.stats()
@@ -495,6 +605,13 @@ class DownloadEngine:
         except Stopped:
             reason = "Parado pelo usuário. A fila foi salva; clique em Iniciar para retomar."
             self._log("warn", reason)
+        except (CookieError, CookieLoadError) as exc:
+            reason = str(exc) if isinstance(exc, CookieError) else describe_cookie_failure(
+                self.cfg, [str(exc)]
+            )
+            for line in reason.splitlines():
+                self._log("error", line)
+            reason = reason.splitlines()[0]
         except BlockedTooOften as exc:
             reason = (
                 f"Encerrado por bloqueios repetidos do servidor ({exc}). "
@@ -535,7 +652,7 @@ class DownloadEngine:
             started = time.monotonic()
             try:
                 path, tags = self._download_one(item)
-            except Stopped:
+            except (Stopped, CookieError, CookieLoadError):
                 raise
             except (DownloadError, ExtractorError, OSError, RuntimeError) as exc:
                 self._last_download_ts = time.monotonic()

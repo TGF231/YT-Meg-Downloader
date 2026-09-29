@@ -15,9 +15,12 @@ from pen_drive_maker.downloader import (  # noqa: E402
     ERROR_BLOCK,
     ERROR_PERMANENT,
     ERROR_TRANSIENT,
+    CookieError,
     DownloadEngine,
     EngineCallbacks,
+    check_cookies,
     classify_error,
+    describe_cookie_failure,
 )
 from pen_drive_maker.organizer import (  # noqa: E402
     build_relative_path,
@@ -75,6 +78,11 @@ class FakeYDL:
         return result
 
 
+class CookieErrorTypeTest(unittest.TestCase):
+    def test_cookie_error_is_its_own_type(self):
+        self.assertTrue(issubclass(CookieError, Exception))
+
+
 class ClassifyErrorTest(unittest.TestCase):
     def test_block_signals(self):
         for message in (
@@ -119,6 +127,73 @@ class OrganizerTest(unittest.TestCase):
         self.assertEqual(
             build_relative_path(tags), "Sem Genero/Beto/Singles/04 - Titulo"
         )
+
+
+class CookieTest(unittest.TestCase):
+    def test_no_cookies_is_fine(self):
+        self.assertIsNone(check_cookies(AppConfig(cookies_mode="none")))
+
+    def test_missing_cookie_file_is_reported(self):
+        cfg = AppConfig(cookies_mode="file", cookies_file="/caminho/que/nao/existe.txt")
+        problem = check_cookies(cfg)
+        self.assertIsNotNone(problem)
+        self.assertIn("arquivo de cookies", problem)
+
+    def test_malformed_cookie_file_is_reported(self):
+        path = pathlib.Path(tempfile.mkdtemp()) / "cookies.txt"
+        path.write_text("isto nao e um cookies.txt\n", encoding="utf-8")
+        cfg = AppConfig(cookies_mode="file", cookies_file=str(path))
+        self.assertIsNotNone(check_cookies(cfg))
+
+    def test_valid_cookie_file_loads(self):
+        path = pathlib.Path(tempfile.mkdtemp()) / "cookies.txt"
+        path.write_text(
+            "# Netscape HTTP Cookie File\n"
+            ".youtube.com\tTRUE\t/\tTRUE\t2000000000\tSID\tvalor\n",
+            encoding="utf-8",
+        )
+        cfg = AppConfig(cookies_mode="file", cookies_file=str(path))
+        self.assertIsNone(check_cookies(cfg))
+
+    def test_chromium_message_mentions_closing_the_browser(self):
+        cfg = AppConfig(cookies_mode="browser", cookies_browser="chrome")
+        message = describe_cookie_failure(cfg, ["Could not copy Chrome cookie database"])
+        self.assertIn("Feche o chrome", message)
+        self.assertIn("cookies.txt", message)
+        self.assertIn("Could not copy Chrome cookie database", message)
+
+    def test_engine_stops_cleanly_on_cookie_failure(self):
+        """Falha de cookie encerra com orientação, sem tocar na playlist."""
+        tmp = tempfile.mkdtemp()
+        cfg = AppConfig(
+            playlist_url="https://music.youtube.com/playlist?list=TEST",
+            output_dir=tmp,
+            cookies_mode="file",
+            cookies_file="/caminho/que/nao/existe.txt",
+        )
+        cfg.normalize()
+        logs = []
+        reasons = []
+        store = QueueStore(cfg.db_path())
+        real = downloader.YoutubeDL
+        downloader.YoutubeDL = FakeYDL
+        FakeYDL.calls = {"playlist": 0, "probe": 0, "download": 0}
+        try:
+            DownloadEngine(
+                cfg,
+                store,
+                EngineCallbacks(
+                    log=lambda level, msg: logs.append((level, msg)),
+                    finished=lambda reason: reasons.append(reason),
+                ),
+            ).run()
+        finally:
+            downloader.YoutubeDL = real
+            store.close()
+        self.assertEqual(FakeYDL.calls["playlist"], 0, "não deve extrair a playlist")
+        self.assertTrue(any("arquivo de cookies" in m for _, m in logs))
+        self.assertFalse(any("Erro inesperado" in m for _, m in logs))
+        self.assertTrue(reasons and "cookies" in reasons[0].lower())
 
 
 class EngineFlowTest(unittest.TestCase):
