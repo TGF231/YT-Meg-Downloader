@@ -41,7 +41,9 @@ Três caminhos, do mais simples ao mais flexível.
 
 **1. Executável standalone** — baixe o arquivo da sua plataforma na
 [página de releases](https://github.com/TGF231/Pen-Drive-Maker/releases) e
-execute. Não precisa de Python.
+execute. **Não precisa de nada instalado**: o `ffmpeg` e o `deno` vêm dentro
+dele. Por isso o arquivo tem ~180 MB, e a primeira abertura leva alguns
+segundos enquanto ele se descompacta.
 
 ```bash
 # Linux
@@ -63,10 +65,12 @@ pip install -r requirements.txt
 python main.py
 ```
 
-### Dois pré-requisitos do sistema
+### Dois pré-requisitos — já embutidos no executável
 
-Nenhum dos dois vem embutido no executável standalone, e a interface verifica
-os dois antes de começar.
+Quem usa o **executável standalone** não precisa instalar nada: as duas
+ferramentas vêm dentro dele e têm prioridade sobre as do sistema. As
+instruções abaixo valem para quem roda pelo pacote Python ou pelo código.
+A interface verifica as duas antes de começar.
 
 **1. Runtime JavaScript — obrigatório.** O YouTube exige a execução de um
 script para liberar os links de áudio. Sem ele todo download falha com
@@ -249,7 +253,22 @@ Metadados e capa são embutidos quando o formato de destino suporta.
 | `packaging.spec` | Receita do PyInstaller para o executável standalone |
 | `.github/workflows/release.yml` | Testes, build e publicação da release na tag |
 
-Dependências: apenas `PySide6` e `yt-dlp`.
+Dependências Python: apenas `PySide6` e `yt-dlp`.
+
+### Ferramentas de terceiros embutidas
+
+O executável standalone embute dois programas, executados como processos
+separados pelo `yt-dlp`:
+
+| Programa | Origem | Licença |
+|---|---|---|
+| ffmpeg | [builds estáticos do BtbN](https://github.com/BtbN/FFmpeg-Builds) | GPL |
+| deno | [denoland/deno](https://github.com/denoland/deno) | MIT |
+
+O texto completo das licenças vai no arquivo `THIRD-PARTY-LICENSES.txt`,
+publicado em cada release e embutido no executável. O código-fonte do ffmpeg
+está em <https://ffmpeg.org/download.html> e os scripts de build no
+repositório do BtbN. O Pen Drive Maker em si é MIT.
 
 ```bash
 python -m unittest discover -s tests -v

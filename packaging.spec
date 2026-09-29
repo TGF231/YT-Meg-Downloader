@@ -5,6 +5,7 @@ Uso: pyinstaller --noconfirm packaging.spec
 O ffmpeg NÃO é embutido: ele continua sendo pré-requisito do sistema.
 """
 
+import os
 import sys
 
 from PyInstaller.utils.hooks import collect_data_files
@@ -17,6 +18,24 @@ block_cipher = None
 # executável sai sem eles e todo download falha com "The page needs to be
 # reloaded", mesmo com um runtime JavaScript instalado.
 YT_DLP_DATAS = collect_data_files("yt_dlp", includes=["**/*.js"])
+
+# Ferramentas externas embutidas (ffmpeg e o runtime JavaScript). O workflow
+# baixa os executáveis para esta pasta antes de compilar; sem ela o build sai
+# enxuto e o programa procura as ferramentas no sistema, como antes.
+BUNDLED_TOOLS = []
+BUNDLED_DOCS = []
+_bundle_dir = os.environ.get("PDM_BUNDLE_DIR", "")
+if _bundle_dir and os.path.isdir(_bundle_dir):
+    for _entry in sorted(os.listdir(_bundle_dir)):
+        _path = os.path.join(_bundle_dir, _entry)
+        if not os.path.isfile(_path):
+            continue
+        # Destino "." = raiz do bundle, que é onde o programa procura.
+        if _entry.lower().endswith((".txt", ".md")):
+            BUNDLED_DOCS.append((_path, "."))   # licenças: não são executáveis
+        else:
+            BUNDLED_TOOLS.append((_path, "."))
+    print(f"Embutindo ferramentas: {[b[0] for b in BUNDLED_TOOLS + BUNDLED_DOCS]}")
 
 # Módulos Qt que a aplicação não usa; excluí-los reduz bastante o binário.
 EXCLUDED_QT = [
@@ -40,8 +59,8 @@ EXCLUDED_QT = [
 a = Analysis(
     ["main.py"],
     pathex=[],
-    binaries=[],
-    datas=YT_DLP_DATAS,
+    binaries=BUNDLED_TOOLS,
+    datas=YT_DLP_DATAS + BUNDLED_DOCS,
     # O yt-dlp registra seus próprios hooks do PyInstaller; os extratores são
     # importados dinamicamente e precisam ser coletados inteiros.
     hiddenimports=["yt_dlp"],

@@ -10,6 +10,8 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from pen_drive_maker.tools import (  # noqa: E402
+    app_dirs,
+    bundled_dir,
     describe_missing_ffmpeg,
     find_executable,
     find_ffmpeg,
@@ -143,6 +145,98 @@ class ProbeTest(unittest.TestCase):
             os.environ["PATH"] = original
 
 
+class BundledToolsTest(unittest.TestCase):
+    """Ferramentas embutidas no executável têm de vencer as do sistema."""
+
+    def setUp(self):
+        self.original_meipass = getattr(sys, "_MEIPASS", None)
+        self.original_path = os.environ.get("PATH", "")
+
+    def tearDown(self):
+        os.environ["PATH"] = self.original_path
+        if self.original_meipass is None:
+            if hasattr(sys, "_MEIPASS"):
+                del sys._MEIPASS
+        else:
+            sys._MEIPASS = self.original_meipass
+
+    def test_bundled_dir_is_none_when_not_frozen(self):
+        if hasattr(sys, "_MEIPASS"):
+            del sys._MEIPASS
+        self.assertIsNone(bundled_dir())
+
+    def test_bundled_dir_points_at_meipass(self):
+        folder = tempfile.mkdtemp()
+        sys._MEIPASS = folder
+        self.assertEqual(bundled_dir(), pathlib.Path(folder))
+
+    def test_bundled_dir_ignores_a_missing_folder(self):
+        sys._MEIPASS = "/pasta/que/nao/existe/xyz"
+        self.assertIsNone(bundled_dir())
+
+    def test_bundled_dir_comes_first(self):
+        folder = tempfile.mkdtemp()
+        sys._MEIPASS = folder
+        self.assertEqual(app_dirs()[0], pathlib.Path(folder))
+
+    def test_bundled_ffmpeg_wins_over_the_system_one(self):
+        bundle = pathlib.Path(tempfile.mkdtemp())
+        system = pathlib.Path(tempfile.mkdtemp())
+        make_fake_ffmpeg(bundle)
+        make_fake_ffmpeg(system)
+        sys._MEIPASS = str(bundle)
+        os.environ["PATH"] = str(system)
+        found = find_ffmpeg()
+        self.assertIsNotNone(found)
+        self.assertTrue(
+            found.startswith(str(bundle)),
+            f"deveria usar o embutido ({bundle}), usou {found}",
+        )
+
+    def test_configured_path_still_wins_over_the_bundled_one(self):
+        bundle = pathlib.Path(tempfile.mkdtemp())
+        chosen = pathlib.Path(tempfile.mkdtemp())
+        make_fake_ffmpeg(bundle)
+        exe = make_fake_ffmpeg(chosen)
+        sys._MEIPASS = str(bundle)
+        self.assertEqual(find_ffmpeg(str(exe)), str(exe))
+
+
+class VersionFlagTest(unittest.TestCase):
+    """O deno recusa '-version'; o ffmpeg recusa '--version' em versoes antigas."""
+
+    def _make(self, body: str) -> str:
+        folder = pathlib.Path(tempfile.mkdtemp())
+        path = folder / "tool"
+        path.write_text(body, encoding="utf-8")
+        path.chmod(0o755)
+        return str(path)
+
+    @unittest.skipIf(IS_WINDOWS, "script de shell")
+    def test_accepts_a_tool_that_only_knows_double_dash(self):
+        tool = self._make(
+            "#!/bin/sh\n"
+            'if [ "$1" = "--version" ]; then echo "deno 2.9.7"; exit 0; fi\n'
+            'echo "error: unexpected argument"; exit 1\n'
+        )
+        self.assertTrue(runs_ok(tool))
+
+    @unittest.skipIf(IS_WINDOWS, "script de shell")
+    def test_accepts_a_tool_that_only_knows_single_dash(self):
+        tool = self._make(
+            "#!/bin/sh\n"
+            'if [ "$1" = "-version" ]; then echo "ffmpeg version 7.0"; exit 0; fi\n'
+            "exit 1\n"
+        )
+        self.assertTrue(runs_ok(tool, "ffmpeg version"))
+
+    @unittest.skipIf(IS_WINDOWS, "script de shell")
+    def test_rejects_a_zero_exit_that_reports_a_bad_argument(self):
+        """Alguns programas saem com 0 reclamando do argumento."""
+        tool = self._make('#!/bin/sh\necho "error: unexpected argument"; exit 0\n')
+        self.assertFalse(runs_ok(tool))
+
+
 class EngineIntegrationTest(unittest.TestCase):
     def test_engine_passes_ffmpeg_location_to_ytdlp(self):
         """Achar o ffmpeg não basta: o yt-dlp precisa receber o caminho."""
@@ -156,12 +250,19 @@ class EngineIntegrationTest(unittest.TestCase):
         cfg = AppConfig(output_dir=out, ffmpeg_path=str(exe), playlist_url="https://x/y")
         cfg.normalize()
         store = QueueStore(cfg.db_path())
+        # O runtime JavaScript não é o assunto aqui, e a máquina de teste pode
+        # não ter nenhum: fixamos para o teste valer em qualquer ambiente.
+        import pen_drive_maker.downloader as downloader
+
+        real_find = downloader.find_js_runtime
+        downloader.find_js_runtime = lambda: "/fake/deno"
         try:
             engine = DownloadEngine(cfg, store, EngineCallbacks())
             self.assertNotIn("ffmpeg_location", engine._base_opts())
             engine._verify_environment()
             self.assertEqual(engine._base_opts().get("ffmpeg_location"), str(exe))
         finally:
+            downloader.find_js_runtime = real_find
             store.close()
 
 

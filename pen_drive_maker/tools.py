@@ -55,9 +55,28 @@ def iter_path_dirs() -> Iterator[Path]:
             continue
 
 
+def bundled_dir() -> Optional[Path]:
+    """Pasta onde o PyInstaller extrai o que foi embutido no executável."""
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        try:
+            path = Path(meipass)
+            return path if path.is_dir() else None
+        except (ValueError, OSError):
+            return None
+    return None
+
+
 def app_dirs() -> List[Path]:
-    """Pastas do próprio programa, onde o usuário pode largar um executável."""
+    """Pastas do próprio programa, onde o usuário pode largar um executável.
+
+    A pasta do bundle vem primeiro: o que embutimos é a versão que sabemos que
+    funciona, e evita depender do que estiver instalado na máquina.
+    """
     dirs: List[Path] = []
+    bundled = bundled_dir()
+    if bundled is not None:
+        dirs.append(bundled)
     if getattr(sys, "frozen", False):
         base = Path(sys.executable).resolve().parent
         dirs += [base, base / "bin", base / "ffmpeg", base / "ffmpeg" / "bin"]
@@ -118,23 +137,33 @@ def _candidates(name: str, directories: Iterable[Path]) -> Iterator[Path]:
                 continue
 
 
-def runs_ok(path: str, expected: str = "", timeout: float = 8.0) -> bool:
-    """Confirma um executável rodando `-version`: é a única prova real."""
-    try:
-        result = subprocess.run(
-            [path, "-version"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=timeout,
-            **_no_window_kwargs(),
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    if result.returncode != 0:
-        return False
-    if not expected:
+# Cada ferramenta aceita uma sintaxe: o deno recusa "-version" e o ffmpeg
+# recusa nada, então tentamos as duas formas antes de descartar o candidato.
+_VERSION_FLAGS = ("--version", "-version")
+
+
+def runs_ok(path: str, expected: str = "", timeout: float = 15.0) -> bool:
+    """Confirma um executável rodando `--version`: é a única prova real."""
+    for flag in _VERSION_FLAGS:
+        try:
+            result = subprocess.run(
+                [path, flag],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=timeout,
+                **_no_window_kwargs(),
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False  # nem executou: tentar outra flag não ajuda
+        if result.returncode != 0:
+            continue
+        output = (result.stdout or b"").decode("utf-8", "replace").lower()
+        if expected and expected.lower() not in output:
+            continue
+        if "unexpected argument" in output or "unrecognized option" in output:
+            continue
         return True
-    return expected.lower() in (result.stdout or b"").decode("utf-8", "replace").lower()
+    return False
 
 
 def find_executable(

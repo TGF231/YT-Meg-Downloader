@@ -3,9 +3,29 @@
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o
 versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
-## [1.0.4] - 2026-09-29
+## [1.1.0] - 2026-09-29
+
+A 1.0.4 não chegou a ser publicada: o job de testes falhou no CI porque a
+suíte dependia das ferramentas instaladas na máquina. As correções dela estão
+incluídas aqui.
+
+### Adicionado
+
+- **ffmpeg e deno embutidos no executável.** O programa deixa de exigir
+  qualquer instalação: as ferramentas embutidas são procuradas antes das do
+  sistema, e o executável passou de ~54 MB para ~180 MB. Um caminho indicado
+  à mão continua tendo prioridade sobre o embutido.
+- `scripts/fetch_tools.py`, usado pelo workflow para baixar as ferramentas e
+  reunir as licenças delas em `THIRD-PARTY-LICENSES.txt`, publicado junto da
+  release e embutido no executável.
 
 ### Corrigido
+
+- A sondagem de um executável usava só `-version`, que o deno recusa e o node
+  também. Agora tenta `--version` antes, e descarta saídas que reclamam do
+  argumento mesmo terminando com código 0.
+- A suíte de testes deixou de depender das ferramentas instaladas na máquina:
+  passa igual com PATH vazio.
 
 - **O ffmpeg não era detectado mesmo estando no PATH.** A busca usava só o
   `shutil.which`, que não trata três formatos de entrada de PATH que o shell do
@@ -25,7 +45,7 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   winget, chocolatey, scoop, `C:\ffmpeg\bin` e `Program Files`.
 - Cada candidato é confirmado executando `-version`, sem piscar console.
 - Módulo `pen_drive_maker/tools.py` reunindo a localização de ferramentas
-  externas, com 17 testes.
+  externas.
 
 ## [1.0.3] - 2026-09-29
 
@@ -108,7 +128,7 @@ Primeira versão.
 - Interface PySide6 com contadores, barras de progresso, log colorido, árvore
   da estrutura de pastas criada e controles de pausar, retomar e parar.
 
-[1.0.4]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.0.4
+[1.1.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.1.0
 [1.0.3]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.0.3
 [1.0.2]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.0.2
 [1.0.1]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.0.1

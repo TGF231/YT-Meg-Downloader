@@ -316,7 +316,9 @@ class CookieTest(unittest.TestCase):
         reasons = []
         store = QueueStore(cfg.db_path())
         real = downloader.YoutubeDL
+        real_find = downloader.find_js_runtime
         downloader.YoutubeDL = FakeYDL
+        downloader.find_js_runtime = lambda: "/fake/deno"
         FakeYDL.calls = {"playlist": 0, "probe": 0, "download": 0}
         try:
             DownloadEngine(
@@ -329,6 +331,7 @@ class CookieTest(unittest.TestCase):
             ).run()
         finally:
             downloader.YoutubeDL = real
+            downloader.find_js_runtime = real_find
             store.close()
         self.assertEqual(FakeYDL.calls["playlist"], 0, "não deve extrair a playlist")
         self.assertTrue(any("arquivo de cookies" in m for _, m in logs))
@@ -340,6 +343,12 @@ class EngineFlowTest(unittest.TestCase):
     def setUp(self):
         self._real_ydl = downloader.YoutubeDL
         downloader.YoutubeDL = FakeYDL
+        # Os testes não podem depender do que está instalado na máquina: sem
+        # isso a suíte passa onde há um runtime e falha no CI, onde não há.
+        self._real_find_runtime = downloader.find_js_runtime
+        self._real_find_ffmpeg = downloader.find_ffmpeg
+        downloader.find_js_runtime = lambda: "/fake/deno"
+        downloader.find_ffmpeg = lambda configured="": "/fake/ffmpeg"
         FakeYDL.calls = {"playlist": 0, "probe": 0, "download": 0}
         FakeYDL.tracks = {
             f"id{i:02d}": {
@@ -371,6 +380,8 @@ class EngineFlowTest(unittest.TestCase):
 
     def tearDown(self):
         downloader.YoutubeDL = self._real_ydl
+        downloader.find_js_runtime = self._real_find_runtime
+        downloader.find_ffmpeg = self._real_find_ffmpeg
         self.store.close()
 
     def _run(self, force=False):

@@ -25,7 +25,7 @@ jobs:
           python-version: "3.12"
       # Os testes do motor não importam PySide6, então rodam sem Qt instalado.
       - run: pip install "yt-dlp>=2024.1.1" pyflakes
-      - run: python -m pyflakes pen_drive_maker main.py tests
+      - run: python -m pyflakes pen_drive_maker main.py tests scripts
       - run: python -m unittest discover -s tests -v
 
   dists:
@@ -55,10 +55,12 @@ jobs:
           # glibc antiga = binário compatível com mais distribuições.
           - os: ubuntu-22.04
             label: linux-x86_64
+            tools: linux
             artifact: PenDriveMaker
             output: PenDriveMaker-linux-x86_64
           - os: windows-latest
             label: windows-x86_64
+            tools: windows
             artifact: PenDriveMaker.exe
             output: PenDriveMaker-windows-x86_64.exe
     runs-on: ${{ matrix.os }}
@@ -68,6 +70,9 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt pyinstaller
+      # Embute ffmpeg e deno: o executável passa a não depender de nada
+      # instalado na máquina. O script exporta PDM_BUNDLE_DIR.
+      - run: python scripts/fetch_tools.py ${{ matrix.tools }} vendor
       - run: pyinstaller --noconfirm packaging.spec
       - name: Renomeia o artefato
         shell: bash
@@ -76,6 +81,12 @@ jobs:
         with:
           name: binary-${{ matrix.label }}
           path: dist/${{ matrix.output }}
+      - name: Publica as licenças das ferramentas embutidas
+        if: matrix.label == 'linux-x86_64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: licencas
+          path: vendor/THIRD-PARTY-LICENSES.txt
 
   release:
     name: Publica a release

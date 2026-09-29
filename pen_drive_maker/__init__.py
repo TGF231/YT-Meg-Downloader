@@ -1,5 +1,5 @@
 """Pen Drive Maker — baixa playlists do YouTube Music sem disparar bloqueios."""
 
-__version__ = "1.0.4"
+__version__ = "1.1.0"
 
 __all__ = ["__version__"]
