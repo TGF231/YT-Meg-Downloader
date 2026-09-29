@@ -155,12 +155,45 @@ class CookieTest(unittest.TestCase):
         cfg = AppConfig(cookies_mode="file", cookies_file=str(path))
         self.assertIsNone(check_cookies(cfg))
 
-    def test_chromium_message_mentions_closing_the_browser(self):
+    def test_chrome_message_mentions_closing_the_browser(self):
         cfg = AppConfig(cookies_mode="browser", cookies_browser="chrome")
         message = describe_cookie_failure(cfg, ["Could not copy Chrome cookie database"])
-        self.assertIn("Feche o chrome", message)
+        self.assertIn("Google Chrome", message)
+        self.assertIn("chrome://settings/system", message)
         self.assertIn("cookies.txt", message)
         self.assertIn("Could not copy Chrome cookie database", message)
+
+    def test_edge_message_is_edge_specific(self):
+        cfg = AppConfig(cookies_mode="browser", cookies_browser="edge")
+        message = describe_cookie_failure(cfg, ["Could not copy Chrome cookie database"])
+        self.assertIn("Microsoft Edge", message)
+        self.assertIn("edge://settings/system", message)
+        self.assertIn("msedge.exe", message)
+        self.assertNotIn("chrome://", message)
+
+    def test_chrome_wording_is_explained_for_other_chromium_browsers(self):
+        """O yt-dlp escreve "Chrome" para qualquer navegador Chromium."""
+        detail = "Could not copy Chrome cookie database. See ... for more info"
+        for browser, label in (("edge", "Microsoft Edge"), ("brave", "Brave")):
+            message = describe_cookie_failure(
+                AppConfig(cookies_mode="browser", cookies_browser=browser), [detail]
+            )
+            self.assertIn("qualquer navegador Chromium", message)
+            self.assertIn(f"consultado foi o {label}", message)
+
+    def test_chrome_note_is_absent_when_chrome_was_selected(self):
+        message = describe_cookie_failure(
+            AppConfig(cookies_mode="browser", cookies_browser="chrome"),
+            ["Could not copy Chrome cookie database"],
+        )
+        self.assertNotIn("qualquer navegador Chromium", message)
+
+    def test_non_chromium_browser_gets_generic_guidance(self):
+        message = describe_cookie_failure(
+            AppConfig(cookies_mode="browser", cookies_browser="firefox"), ["perfil ausente"]
+        )
+        self.assertIn("Firefox", message)
+        self.assertNotIn("Chromium (Chrome, Edge", message)
 
     def test_engine_stops_cleanly_on_cookie_failure(self):
         """Falha de cookie encerra com orientação, sem tocar na playlist."""

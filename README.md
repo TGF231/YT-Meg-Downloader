@@ -113,14 +113,25 @@ eles naquela execução.
 
 #### `Could not copy Chrome cookie database`
 
-O banco de cookies fica travado enquanto o navegador está aberto.
+**Essa mensagem cita o Chrome mesmo quando o navegador escolhido é outro.** O
+`yt-dlp` usa o mesmo texto para todos os navegadores baseados em Chromium —
+Chrome, Edge, Brave, Opera e Vivaldi. Se você selecionou o Edge, o Edge foi
+consultado; só a mensagem é que fala em Chrome.
 
-1. Feche o navegador por completo, inclusive os processos em segundo plano. No
-   Windows, confira o Gerenciador de Tarefas: a opção *continuar executando
-   apps em segundo plano* mantém o Chrome vivo depois de fechar a janela.
-2. Se ainda falhar no Windows: a partir do Chrome 127 os cookies são guardados
-   com uma criptografia que o `yt-dlp` não consegue abrir. Use o **Firefox** ou
-   um arquivo `cookies.txt`.
+A causa é um `PermissionError` no Windows: o banco de cookies fica travado
+enquanto o navegador está rodando.
+
+1. Feche o navegador por completo, inclusive os processos em segundo plano:
+
+   | Navegador | Onde desligar | Processo a encerrar |
+   |---|---|---|
+   | Edge | `edge://settings/system` — *Aumento de inicialização* e *Continuar executando extensões e aplicativos em segundo plano* | `msedge.exe` |
+   | Chrome | `chrome://settings/system` — *Continuar executando apps em segundo plano* | `chrome.exe` |
+   | Brave | `brave://settings/system` | `brave.exe` |
+
+2. Se ainda falhar no Windows: os navegadores Chromium passaram a guardar os
+   cookies com uma criptografia ligada ao aplicativo que o `yt-dlp` não
+   consegue abrir. Use o **Firefox** ou um arquivo `cookies.txt`.
 3. Para exportar o `cookies.txt`, use uma extensão que gere o formato Netscape,
    salve o arquivo e escolha **Arquivo cookies.txt** na interface.
 

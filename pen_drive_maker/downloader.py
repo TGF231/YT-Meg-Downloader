@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import random
 import re
-import sys
 import threading
 import time
 import traceback
@@ -88,40 +87,70 @@ def classify_error(message: str) -> str:
     return ERROR_TRANSIENT
 
 
-# Navegadores baseados em Chromium: o banco de cookies fica travado enquanto o
-# navegador está aberto, e no Windows o Chrome 127+ usa uma criptografia que o
-# yt-dlp não consegue abrir.
+# Navegadores baseados em Chromium. Para todos eles o yt-dlp levanta o mesmo
+# PermissionError (errno 13) no Windows quando não consegue copiar o banco de
+# cookies, e a mensagem dele diz "Chrome" mesmo que o navegador seja outro.
 CHROMIUM_BROWSERS = {"chrome", "chromium", "edge", "brave", "opera", "vivaldi"}
+
+# Cada navegador esconde num lugar diferente as opções que o mantêm vivo depois
+# de fechar a janela, que é a causa usual do banco de cookies travado.
+BROWSER_CLOSE_HINTS = {
+    "edge": (
+        "O Edge continua rodando depois que a janela fecha. Em "
+        "edge://settings/system desligue \"Aumento de inicialização\" e "
+        "\"Continuar executando extensões e aplicativos em segundo plano quando o "
+        "Microsoft Edge estiver fechado\", feche o Edge e encerre os processos "
+        "msedge.exe no Gerenciador de Tarefas."
+    ),
+    "chrome": (
+        "Em chrome://settings/system desligue \"Continuar executando apps em "
+        "segundo plano quando o Google Chrome estiver fechado\", feche o Chrome e "
+        "encerre os processos chrome.exe no Gerenciador de Tarefas."
+    ),
+    "brave": (
+        "Em brave://settings/system desligue a execução em segundo plano, feche o "
+        "Brave e encerre os processos brave.exe no Gerenciador de Tarefas."
+    ),
+}
+BROWSER_LABELS = {
+    "chrome": "Google Chrome",
+    "chromium": "Chromium",
+    "edge": "Microsoft Edge",
+    "brave": "Brave",
+    "opera": "Opera",
+    "vivaldi": "Vivaldi",
+    "firefox": "Firefox",
+    "safari": "Safari",
+}
+GENERIC_CLOSE_HINT = (
+    "Feche o navegador por completo e encerre os processos dele que continuarem "
+    "no Gerenciador de Tarefas: enquanto ele roda, o banco de cookies fica "
+    "travado."
+)
 
 
 def describe_cookie_failure(cfg: "AppConfig", details: List[str]) -> str:
     """Mensagem acionável para uma falha ao carregar cookies."""
     detail = " ".join(d.strip() for d in details if d.strip())
+    key = (cfg.cookies_browser or "").strip().lower()
+    browser = BROWSER_LABELS.get(key, key.capitalize())
     lines: List[str] = []
 
     if cfg.cookies_mode == "browser":
-        browser = (cfg.cookies_browser or "").lower()
-        lines.append(f"Não foi possível ler os cookies do {cfg.cookies_browser}.")
-        if browser in CHROMIUM_BROWSERS:
+        lines.append(f"Não foi possível ler os cookies do {browser or 'navegador'}.")
+        if key in CHROMIUM_BROWSERS:
+            lines.append(f"1) {BROWSER_CLOSE_HINTS.get(key, GENERIC_CLOSE_HINT)}")
             lines.append(
-                f"1) Feche o {cfg.cookies_browser} por completo, inclusive os processos em "
-                "segundo plano (no Windows, veja o Gerenciador de Tarefas; a opção "
-                '"continuar executando apps em segundo plano" mantém o navegador vivo).'
+                "2) Se continuar falhando no Windows: os navegadores baseados em "
+                "Chromium (Chrome, Edge, Brave, Opera, Vivaldi) passaram a guardar os "
+                "cookies com uma criptografia ligada ao aplicativo que o yt-dlp não "
+                "consegue abrir. Nesse caso use o Firefox ou um arquivo cookies.txt."
             )
-            if sys.platform == "win32":
-                lines.append(
-                    "2) Se continuar falhando: a partir do Chrome 127 o Windows guarda os "
-                    "cookies com uma criptografia que o yt-dlp não consegue abrir. Nesse "
-                    "caso use o Firefox ou um arquivo cookies.txt."
-                )
-            else:
-                lines.append(
-                    "2) Se continuar falhando, use o Firefox ou um arquivo cookies.txt."
-                )
         else:
+            lines.append(f"1) {GENERIC_CLOSE_HINT}")
             lines.append(
-                f"Feche o {cfg.cookies_browser} e confirme que o perfil padrão existe "
-                "nesta máquina."
+                f"2) Confirme que existe um perfil do {browser or 'navegador'} nesta "
+                "máquina, com a conta do YouTube Music logada."
             )
         lines.append(
             "3) Para exportar um cookies.txt, use uma extensão de navegador que gere o "
@@ -143,6 +172,13 @@ def describe_cookie_failure(cfg: "AppConfig", details: List[str]) -> str:
     )
     if detail:
         lines.append(f"Detalhe do yt-dlp: {detail}")
+        # O yt-dlp usa a palavra "Chrome" nessa mensagem para qualquer navegador
+        # baseado em Chromium; sem essa nota o usuário acha que selecionou errado.
+        if "chrome cookie database" in detail.lower() and key != "chrome":
+            lines.append(
+                f"(A mensagem acima cita o Chrome, mas o yt-dlp escreve isso para "
+                f"qualquer navegador Chromium. O navegador consultado foi o {browser}.)"
+            )
     return "\n".join(lines)
 
 

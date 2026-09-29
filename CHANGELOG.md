@@ -3,6 +3,20 @@
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o
 versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
+## [1.0.2] - 2026-09-29
+
+### Corrigido
+
+- A orientação sobre cookies repetia a palavra "Chrome" da mensagem do yt-dlp
+  mesmo quando o navegador escolhido era outro. O yt-dlp usa esse texto para
+  qualquer navegador baseado em Chromium; agora a mensagem nomeia o navegador
+  realmente consultado e explica a diferença.
+- A instrução para fechar o navegador passou a ser específica: o Edge aponta
+  para `edge://settings/system`, o "Aumento de inicialização" e o processo
+  `msedge.exe`; o Chrome e o Brave têm as suas.
+- Navegadores não-Chromium (Firefox, Safari) deixaram de receber a observação
+  sobre a criptografia do Windows, que não se aplica a eles.
+
 ## [1.0.1] - 2026-09-29
 
 ### Corrigido
@@ -46,5 +60,6 @@ Primeira versão.
 - Interface PySide6 com contadores, barras de progresso, log colorido, árvore
   da estrutura de pastas criada e controles de pausar, retomar e parar.
 
+[1.0.2]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.0.2
 [1.0.1]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.0.1
 [1.0.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.0.0
