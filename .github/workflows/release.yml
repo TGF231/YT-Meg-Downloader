@@ -3,7 +3,13 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Permite publicar sem enviar a tag: o gh cria a tag no commit escolhido.
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Versão a publicar, com o v (ex.: v1.0.0)"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -81,10 +87,20 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+      - name: Resolve a versão
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.version }}"
+          else
+            tag="$GITHUB_REF_NAME"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - name: Monta as notas a partir do CHANGELOG
         id: notes
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${{ steps.version.outputs.tag }}"
+          version="${version#v}"
           # Recorta a seção da versão no CHANGELOG; se não achar, o gh gera as notas.
           awk -v v="$version" '
             $0 ~ "^## \\[" v "\\]" { found = 1; next }
@@ -98,10 +114,12 @@ jobs:
         run: |
           set -eux
           ls -la artifacts
+          tag="${{ steps.version.outputs.tag }}"
+          # --target cria a tag neste commit quando ela ainda não existe.
           if [ "${{ steps.notes.outputs.has_notes }}" = "true" ]; then
-            gh release create "$GITHUB_REF_NAME" artifacts/* \
-              --title "$GITHUB_REF_NAME" --notes-file notes.md
+            gh release create "$tag" artifacts/* --target "$GITHUB_SHA" \
+              --title "$tag" --notes-file notes.md
           else
-            gh release create "$GITHUB_REF_NAME" artifacts/* \
-              --title "$GITHUB_REF_NAME" --generate-notes
+            gh release create "$tag" artifacts/* --target "$GITHUB_SHA" \
+              --title "$tag" --generate-notes
           fi

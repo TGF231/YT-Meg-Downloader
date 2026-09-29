@@ -197,6 +197,10 @@ compila os executáveis para Linux e Windows com o PyInstaller
 (`packaging.spec`) e publica a release com todos os artefatos, usando a seção
 do `CHANGELOG.md` como notas.
 
+Também dá para publicar sem enviar a tag: em **Actions → Release → Run
+workflow**, informe a versão (ex.: `v1.0.0`) e o workflow cria a tag no commit
+escolhido junto com a release.
+
 Para gerar os artefatos localmente:
 
 ```bash
