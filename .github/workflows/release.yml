@@ -1,0 +1,107 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: Testes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Os testes do motor não importam PySide6, então rodam sem Qt instalado.
+      - run: pip install "yt-dlp>=2024.1.1" pyflakes
+      - run: python -m pyflakes pen_drive_maker main.py tests
+      - run: python -m unittest discover -s tests -v
+
+  dists:
+    name: Wheel e sdist
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+      - run: python -m build
+      - run: python -m twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dists
+          path: dist/*
+
+  binaries:
+    name: Executável (${{ matrix.label }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # glibc antiga = binário compatível com mais distribuições.
+          - os: ubuntu-22.04
+            label: linux-x86_64
+            artifact: PenDriveMaker
+            output: PenDriveMaker-linux-x86_64
+          - os: windows-latest
+            label: windows-x86_64
+            artifact: PenDriveMaker.exe
+            output: PenDriveMaker-windows-x86_64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt pyinstaller
+      - run: pyinstaller --noconfirm packaging.spec
+      - name: Renomeia o artefato
+        shell: bash
+        run: mv "dist/${{ matrix.artifact }}" "dist/${{ matrix.output }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.label }}
+          path: dist/${{ matrix.output }}
+
+  release:
+    name: Publica a release
+    needs: [dists, binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Monta as notas a partir do CHANGELOG
+        id: notes
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # Recorta a seção da versão no CHANGELOG; se não achar, o gh gera as notas.
+          awk -v v="$version" '
+            $0 ~ "^## \\[" v "\\]" { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if [ -s notes.md ]; then echo "has_notes=true" >> "$GITHUB_OUTPUT"; fi
+      - name: Cria a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eux
+          ls -la artifacts
+          if [ "${{ steps.notes.outputs.has_notes }}" = "true" ]; then
+            gh release create "$GITHUB_REF_NAME" artifacts/* \
+              --title "$GITHUB_REF_NAME" --notes-file notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" artifacts/* \
+              --title "$GITHUB_REF_NAME" --generate-notes
+          fi

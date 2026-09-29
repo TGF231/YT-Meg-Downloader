@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pen-drive-maker"
+dynamic = ["version"]
+description = "Baixa playlists do YouTube Music sem disparar bloqueios e organiza os arquivos em pastas para pen drive automotivo"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Thiago Gomes Fernandes", email = "thiagogomesfernandes2310@gmail.com" }]
+keywords = ["yt-dlp", "youtube-music", "playlist", "pendrive", "pyside6", "downloader"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "Natural Language :: Portuguese (Brazilian)",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio",
+]
+dependencies = [
+    "PySide6>=6.5",
+    "yt-dlp>=2024.1.1",
+]
+
+[project.urls]
+Homepage = "https://github.com/TGF231/Pen-Drive-Maker"
+Source = "https://github.com/TGF231/Pen-Drive-Maker"
+Issues = "https://github.com/TGF231/Pen-Drive-Maker/issues"
+
+# Entrada gráfica: no Windows o setuptools gera um .exe sem janela de console.
+[project.gui-scripts]
+pen-drive-maker = "pen_drive_maker.gui:main"
+
+[tool.setuptools]
+packages = ["pen_drive_maker"]
+
+[tool.setuptools.dynamic]
+version = { attr = "pen_drive_maker.__version__" }

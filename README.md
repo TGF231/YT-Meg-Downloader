@@ -37,23 +37,45 @@ vez de extrair a página duas vezes.
 
 ## Instalação
 
+Três caminhos, do mais simples ao mais flexível.
+
+**1. Executável standalone** — baixe o arquivo da sua plataforma na
+[página de releases](https://github.com/TGF231/Pen-Drive-Maker/releases) e
+execute. Não precisa de Python.
+
 ```bash
-pip install -r requirements.txt
+# Linux
+chmod +x PenDriveMaker-linux-x86_64
+./PenDriveMaker-linux-x86_64
 ```
 
-O `ffmpeg` precisa estar no `PATH` para conversão de formato, gravação de
-metadados e capa embutida. A interface avisa se ele não for encontrado.
+**2. Pacote Python** — instala o comando `pen-drive-maker`:
 
 ```bash
-# Debian/Ubuntu
-sudo apt install ffmpeg
+pip install pen_drive_maker-1.0.0-py3-none-any.whl
+pen-drive-maker
+```
+
+**3. A partir do código**:
+
+```bash
+pip install -r requirements.txt
+python main.py
+```
+
+### ffmpeg
+
+Em qualquer um dos caminhos, o `ffmpeg` precisa estar no `PATH` para conversão
+de formato, gravação de metadados e capa embutida — ele **não** vem embutido no
+executável standalone. A interface avisa se não encontrá-lo.
+
+```bash
+sudo apt install ffmpeg          # Debian/Ubuntu
+winget install Gyan.FFmpeg       # Windows
+brew install ffmpeg              # macOS
 ```
 
 ## Uso
-
-```bash
-python main.py
-```
 
 1. Cole a URL da playlist (`https://music.youtube.com/playlist?list=...`).
 2. Escolha o diretório de saída — pode ser a raiz do pen drive.
@@ -147,9 +169,37 @@ Metadados e capa são embutidos quando o formato de destino suporta.
 | `pen_drive_maker/downloader.py` | Motor: extração, ritmo, bloqueios, download |
 | `pen_drive_maker/gui.py` | Interface PySide6 |
 | `tests/test_engine.py` | Testes offline do motor (`yt-dlp` substituído) |
+| `pyproject.toml` | Metadados do pacote e entry point `pen-drive-maker` |
+| `packaging.spec` | Receita do PyInstaller para o executável standalone |
+| `.github/workflows/release.yml` | Testes, build e publicação da release na tag |
 
 Dependências: apenas `PySide6` e `yt-dlp`.
 
 ```bash
 python -m unittest discover -s tests -v
+```
+
+Os testes não importam PySide6, então rodam sem Qt instalado.
+
+## Publicar uma nova versão
+
+1. Atualize `__version__` em `pen_drive_maker/__init__.py` e adicione a seção
+   correspondente em `CHANGELOG.md`.
+2. Crie e envie a tag:
+
+   ```bash
+   git tag -a v1.1.0 -m "v1.1.0"
+   git push origin v1.1.0
+   ```
+
+O workflow `.github/workflows/release.yml` roda os testes, gera wheel e sdist,
+compila os executáveis para Linux e Windows com o PyInstaller
+(`packaging.spec`) e publica a release com todos os artefatos, usando a seção
+do `CHANGELOG.md` como notas.
+
+Para gerar os artefatos localmente:
+
+```bash
+python -m build                          # dist/*.whl e dist/*.tar.gz
+pyinstaller --noconfirm packaging.spec   # dist/PenDriveMaker
 ```
