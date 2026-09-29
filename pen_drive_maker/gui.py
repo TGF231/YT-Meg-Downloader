@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -34,7 +35,13 @@ from PySide6.QtWidgets import (
 )
 
 from .config import AUDIO_FORMATS, BROWSERS, AppConfig
-from .downloader import DownloadEngine, EngineCallbacks, check_cookies
+from .downloader import (
+    DownloadEngine,
+    EngineCallbacks,
+    check_cookies,
+    describe_missing_js_runtime,
+    find_js_runtime,
+)
 from .organizer import TrackTags, sanitize_component
 from .store import QueueStats, QueueStore
 
@@ -443,18 +450,88 @@ class MainWindow(QMainWindow):
         # temporário para "sem cookies".
         self._save_settings()
 
-        # Verifica os cookies agora: descobrir isso no meio de uma playlist longa
-        # custa tempo e não tem conserto automático.
+        # Verificações de ambiente antes de começar: descobrir isso no meio de
+        # uma playlist longa custa tempo e não tem conserto automático.
+        allow_missing_runtime = self._confirm_js_runtime()
+        if allow_missing_runtime is None:
+            return
+        if not self._confirm_ffmpeg(cfg):
+            return
         if not self._confirm_cookies(cfg):
             return
 
         cfg = self.current_config()  # pode ter mudado no diálogo de cookies
-        self.engine = DownloadEngine(cfg, store, self.bridge.callbacks())
+        self.engine = DownloadEngine(
+            cfg, store, self.bridge.callbacks(), allow_missing_js_runtime=allow_missing_runtime
+        )
         self.thread = EngineThread(self.engine, force_reextract)
         self.thread.finished.connect(self._on_thread_finished)
         self._append_log("info", f"Fila persistente: {cfg.db_path()}")
         self._update_controls(running=True)
         self.thread.start()
+
+    def _ask_continue(self, title: str, text: str, detail: str, go_on: str) -> bool:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle(title)
+        box.setText(text)
+        box.setInformativeText(detail)
+        proceed = box.addButton(go_on, QMessageBox.AcceptRole)
+        box.addButton("Cancelar", QMessageBox.RejectRole)
+        box.setDefaultButton(proceed)
+        box.exec()
+        return box.clickedButton() is proceed
+
+    def _confirm_js_runtime(self) -> Optional[bool]:
+        """None = cancelar. False = runtime presente. True = seguir sem ele."""
+        runtime = find_js_runtime()
+        if runtime is not None:
+            self._append_log("info", f"Runtime JavaScript: {runtime}")
+            return False
+
+        detail = describe_missing_js_runtime()
+        for line in detail.splitlines():
+            self._append_log("error", line)
+        if self._ask_continue(
+            "Runtime JavaScript ausente",
+            "O YouTube exige um runtime JavaScript para liberar os links de áudio.",
+            detail,
+            "Tentar mesmo assim",
+        ):
+            self._append_log("warn", "Seguindo sem runtime JavaScript; os downloads devem falhar.")
+            return True
+        self._append_log("warn", "Início cancelado: instale o Deno e tente de novo.")
+        return None
+
+    def _confirm_ffmpeg(self, cfg: AppConfig) -> bool:
+        needs_ffmpeg = (
+            cfg.audio_format != "best" or cfg.embed_metadata or cfg.embed_thumbnail
+        )
+        if not needs_ffmpeg or shutil.which("ffmpeg") is not None:
+            return True
+
+        detail = (
+            "Sem o ffmpeg o áudio é salvo no formato original (normalmente .webm ou "
+            ".m4a), sem conversão para MP3, sem metadados e sem capa — muitos "
+            "aparelhos automotivos não tocam esses arquivos.\n"
+            + (
+                "Instale com: winget install Gyan.FFmpeg\n"
+                if os.name == "nt"
+                else "Instale com: sudo apt install ffmpeg\n"
+            )
+            + "Depois feche e abra o programa de novo."
+        )
+        for line in detail.splitlines():
+            self._append_log("warn", line)
+        if self._ask_continue(
+            "ffmpeg não encontrado",
+            "O ffmpeg não está instalado.",
+            detail,
+            "Baixar sem converter",
+        ):
+            return True
+        self._append_log("warn", "Início cancelado: instale o ffmpeg e tente de novo.")
+        return False
 
     def _confirm_cookies(self, cfg: AppConfig) -> bool:
         """Testa os cookies. Deixa o usuário seguir sem eles se falharem."""

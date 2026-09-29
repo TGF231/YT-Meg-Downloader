@@ -7,7 +7,16 @@ O ffmpeg NÃO é embutido: ele continua sendo pré-requisito do sistema.
 
 import sys
 
+from PyInstaller.utils.hooks import collect_data_files
+
 block_cipher = None
+
+# O yt-dlp traz os scripts do solucionador de desafios do YouTube como arquivos
+# .js dentro do pacote (extractor/youtube/jsc/_builtin/vendor). O hook oficial
+# do yt-dlp só coleta os do pacote opcional yt_dlp_ejs, então sem esta linha o
+# executável sai sem eles e todo download falha com "The page needs to be
+# reloaded", mesmo com um runtime JavaScript instalado.
+YT_DLP_DATAS = collect_data_files("yt_dlp", includes=["**/*.js"])
 
 # Módulos Qt que a aplicação não usa; excluí-los reduz bastante o binário.
 EXCLUDED_QT = [
@@ -32,7 +41,7 @@ a = Analysis(
     ["main.py"],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=YT_DLP_DATAS,
     # O yt-dlp registra seus próprios hooks do PyInstaller; os extratores são
     # importados dinamicamente e precisam ser coletados inteiros.
     hiddenimports=["yt_dlp"],

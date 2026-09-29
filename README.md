@@ -63,15 +63,33 @@ pip install -r requirements.txt
 python main.py
 ```
 
-### ffmpeg
+### Dois pré-requisitos do sistema
 
-Em qualquer um dos caminhos, o `ffmpeg` precisa estar no `PATH` para conversão
-de formato, gravação de metadados e capa embutida — ele **não** vem embutido no
-executável standalone. A interface avisa se não encontrá-lo.
+Nenhum dos dois vem embutido no executável standalone, e a interface verifica
+os dois antes de começar.
+
+**1. Runtime JavaScript — obrigatório.** O YouTube exige a execução de um
+script para liberar os links de áudio. Sem ele todo download falha com
+`Signature solving failed` e `The page needs to be reloaded`, por mais que os
+cookies estejam corretos. O Deno é o recomendado pelo `yt-dlp`:
 
 ```bash
-sudo apt install ffmpeg          # Debian/Ubuntu
+winget install DenoLand.Deno            # Windows
+curl -fsSL https://deno.land/install.sh | sh   # Linux
+brew install deno                       # macOS
+```
+
+O `node`, o `bun` e o `qjs` também servem. No Windows há uma alternativa sem
+instalar nada: baixe o `deno.exe` e coloque **na mesma pasta do
+`PenDriveMaker.exe`** — o `yt-dlp` procura ali quando o programa está
+empacotado.
+
+**2. ffmpeg — necessário para converter.** Sem ele o áudio é salvo no formato
+original, sem conversão para MP3, sem metadados e sem capa.
+
+```bash
 winget install Gyan.FFmpeg       # Windows
+sudo apt install ffmpeg          # Debian/Ubuntu
 brew install ffmpeg              # macOS
 ```
 
@@ -110,6 +128,11 @@ necessários para playlists privadas. Duas opções:
 Os cookies são testados assim que você clica em **Iniciar**, antes de qualquer
 requisição: se falharem, a ferramenta explica o motivo e oferece seguir sem
 eles naquela execução.
+
+#### `The page needs to be reloaded` / `Signature solving failed`
+
+Falta um runtime JavaScript. Veja *Dois pré-requisitos do sistema* acima:
+instale o Deno, ou coloque o `deno.exe` ao lado do `PenDriveMaker.exe`.
 
 #### `Could not copy Chrome cookie database`
 

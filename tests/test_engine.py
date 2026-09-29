@@ -13,6 +13,8 @@ import pen_drive_maker.downloader as downloader  # noqa: E402
 from pen_drive_maker.config import AppConfig  # noqa: E402
 from pen_drive_maker.downloader import (  # noqa: E402
     ERROR_BLOCK,
+    ERROR_JS_RUNTIME,
+    EnvironmentProblem,
     ERROR_PERMANENT,
     ERROR_TRANSIENT,
     CookieError,
@@ -21,6 +23,8 @@ from pen_drive_maker.downloader import (  # noqa: E402
     check_cookies,
     classify_error,
     describe_cookie_failure,
+    describe_missing_js_runtime,
+    find_js_runtime,
 )
 from pen_drive_maker.organizer import (  # noqa: E402
     build_relative_path,
@@ -127,6 +131,109 @@ class OrganizerTest(unittest.TestCase):
         self.assertEqual(
             build_relative_path(tags), "Sem Genero/Beto/Singles/04 - Titulo"
         )
+
+
+class JsRuntimeTest(unittest.TestCase):
+    def test_challenge_errors_are_classified(self):
+        for message in (
+            "ERROR: [youtube] abc: The page needs to be reloaded.",
+            "Signature solving failed: Some formats may be missing",
+            "n challenge solving failed: Some formats may be missing",
+        ):
+            self.assertEqual(classify_error(message), ERROR_JS_RUNTIME, message)
+
+    def test_block_still_wins_over_nothing_else(self):
+        self.assertEqual(classify_error("HTTP Error 429"), ERROR_BLOCK)
+
+    def test_environment_problem_is_its_own_type(self):
+        self.assertTrue(issubclass(EnvironmentProblem, Exception))
+
+    def test_message_names_the_runtimes_and_how_to_install(self):
+        message = describe_missing_js_runtime()
+        for token in ("deno", "bun", "node", "qjs"):
+            self.assertIn(token, message)
+        self.assertIn("Deno", message)
+
+    def test_finds_runtime_next_to_a_frozen_executable(self):
+        """Empacotado, o yt-dlp aceita o deno na pasta do próprio programa."""
+        folder = pathlib.Path(tempfile.mkdtemp())
+        fake = folder / "deno"
+        fake.write_text("#!/bin/sh\n")
+        fake.chmod(0o755)
+        original_frozen = getattr(sys, "frozen", None)
+        original_executable = sys.executable
+        sys.frozen = True
+        sys.executable = str(folder / "PenDriveMaker")
+        try:
+            self.assertEqual(find_js_runtime(), str(fake))
+        finally:
+            sys.executable = original_executable
+            if original_frozen is None:
+                del sys.frozen
+            else:
+                sys.frozen = original_frozen
+
+    def test_engine_aborts_when_no_runtime_is_available(self):
+        tmp = tempfile.mkdtemp()
+        cfg = AppConfig(
+            playlist_url="https://music.youtube.com/playlist?list=TEST", output_dir=tmp
+        )
+        cfg.normalize()
+        logs, reasons = [], []
+        store = QueueStore(cfg.db_path())
+        real_ydl, real_find = downloader.YoutubeDL, downloader.find_js_runtime
+        downloader.YoutubeDL = FakeYDL
+        downloader.find_js_runtime = lambda: None
+        FakeYDL.calls = {"playlist": 0, "probe": 0, "download": 0}
+        try:
+            DownloadEngine(
+                cfg,
+                store,
+                EngineCallbacks(
+                    log=lambda level, msg: logs.append((level, msg)),
+                    finished=lambda reason: reasons.append(reason),
+                ),
+            ).run()
+        finally:
+            downloader.YoutubeDL, downloader.find_js_runtime = real_ydl, real_find
+            store.close()
+        self.assertEqual(FakeYDL.calls["playlist"], 0, "não deve extrair sem runtime")
+        self.assertTrue(any("runtime JavaScript" in m for _, m in logs))
+        self.assertFalse(any("Erro inesperado" in m for _, m in logs))
+
+    def test_challenge_failure_mid_queue_aborts_instead_of_retrying(self):
+        """Sem runtime, repetir a faixa é desperdício: a fila para na hora."""
+        tmp = tempfile.mkdtemp()
+        cfg = AppConfig(
+            playlist_url="https://music.youtube.com/playlist?list=TEST",
+            output_dir=tmp,
+            min_interval=0.0,
+            jitter=0.0,
+            max_retries=3,
+        )
+        cfg.normalize()
+        store = QueueStore(cfg.db_path())
+        real_ydl, real_find = downloader.YoutubeDL, downloader.find_js_runtime
+        downloader.YoutubeDL = FakeYDL
+        FakeYDL.calls = {"playlist": 0, "probe": 0, "download": 0}
+        FakeYDL.tracks = {"id01": {"id": "id01", "title": "M1", "artist": "A"}}
+        FakeYDL.failures = {
+            "id01": [DownloadError("ERROR: [youtube] id01: The page needs to be reloaded.")] * 5
+        }
+        # Presente na extração, ausente quando a faixa falha.
+        seen = {"n": 0}
+
+        def flaky_find():
+            seen["n"] += 1
+            return "/usr/bin/deno" if seen["n"] == 1 else None
+
+        downloader.find_js_runtime = flaky_find
+        try:
+            DownloadEngine(cfg, store, EngineCallbacks()).run()
+        finally:
+            downloader.YoutubeDL, downloader.find_js_runtime = real_ydl, real_find
+            store.close()
+        self.assertEqual(FakeYDL.calls["probe"], 1, "não deve retentar sem runtime")
 
 
 class CookieTest(unittest.TestCase):

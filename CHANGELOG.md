@@ -3,6 +3,30 @@
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o
 versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
+## [1.0.3] - 2026-09-29
+
+### Corrigido
+
+- **O executável standalone não continha os scripts do solucionador de desafios
+  do YouTube.** O yt-dlp guarda esses `.js` dentro do próprio pacote, e o hook
+  oficial dele para o PyInstaller só coleta os do pacote opcional
+  `yt_dlp_ejs`. Sem eles todo download falhava com "The page needs to be
+  reloaded", mesmo com um runtime JavaScript instalado. O `packaging.spec`
+  passa a coletá-los.
+- Falhas de desafio JavaScript não consomem mais as retentativas da faixa: sem
+  um runtime instalado, nenhuma repetição resolveria.
+
+### Adicionado
+
+- Verificação de runtime JavaScript (deno, bun, node ou qjs) antes de começar,
+  com instruções de instalação por sistema. A busca cobre o PATH e a pasta do
+  próprio executável, que é onde o yt-dlp procura quando o programa está
+  empacotado — basta colocar o `deno.exe` ao lado do `PenDriveMaker.exe`.
+- Aviso sobre o ffmpeg ausente quando ele é necessário para o formato escolhido
+  (conversão, metadados ou capa), com a opção de baixar sem converter.
+- Ambas as verificações podem ser ignoradas pelo usuário, caso a detecção
+  falhe numa instalação fora do comum.
+
 ## [1.0.2] - 2026-09-29
 
 ### Corrigido
@@ -60,6 +84,7 @@ Primeira versão.
 - Interface PySide6 com contadores, barras de progresso, log colorido, árvore
   da estrutura de pastas criada e controles de pausar, retomar e parar.
 
+[1.0.3]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.0.3
 [1.0.2]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.0.2
 [1.0.1]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.0.1
 [1.0.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.0.0

@@ -14,8 +14,11 @@ Estratégia contra bloqueio do servidor:
 
 from __future__ import annotations
 
+import os
 import random
 import re
+import shutil
+import sys
 import threading
 import time
 import traceback
@@ -73,13 +76,28 @@ PERMANENT_PATTERNS = [
 _BLOCK_RE = re.compile("|".join(BLOCK_PATTERNS), re.IGNORECASE)
 _PERMANENT_RE = re.compile("|".join(PERMANENT_PATTERNS), re.IGNORECASE)
 
+# O YouTube exige a execução de um script JavaScript para liberar os links de
+# áudio; sem um runtime instalado o yt-dlp falha sempre com estas mensagens.
+JS_CHALLENGE_PATTERNS = [
+    r"the page needs to be reloaded",
+    r"signature solving failed",
+    r"challenge solving failed",
+    r"javascript runtime",
+    r"challenge solver",
+    r"wiki/ejs",
+]
+_JS_CHALLENGE_RE = re.compile("|".join(JS_CHALLENGE_PATTERNS), re.IGNORECASE)
+
 ERROR_BLOCK = "block"
 ERROR_PERMANENT = "permanent"
 ERROR_TRANSIENT = "transient"
+ERROR_JS_RUNTIME = "js_runtime"
 
 
 def classify_error(message: str) -> str:
     text = message or ""
+    if _JS_CHALLENGE_RE.search(text):
+        return ERROR_JS_RUNTIME
     if _BLOCK_RE.search(text):
         return ERROR_BLOCK
     if _PERMANENT_RE.search(text):
@@ -217,12 +235,72 @@ def check_cookies(cfg: "AppConfig") -> Optional[str]:
     return None
 
 
+# Nomes dos executáveis aceitos pelo yt-dlp, na ordem de preferência dele.
+JS_RUNTIME_EXECUTABLES = ("deno", "bun", "node", "qjs")
+
+
+def find_js_runtime() -> Optional[str]:
+    """Procura um runtime JavaScript onde o yt-dlp procura.
+
+    Além do PATH, o yt-dlp olha a pasta do próprio executável quando o programa
+    está empacotado, então basta colocar o deno.exe ao lado do PenDriveMaker.exe.
+    """
+    extra_dirs: List[Path] = []
+    if getattr(sys, "frozen", False):
+        extra_dirs.append(Path(sys.executable).resolve().parent)
+    extra_dirs.append(Path.cwd())
+
+    suffixes = ("", ".exe", ".cmd", ".bat") if os.name == "nt" else ("",)
+    for name in JS_RUNTIME_EXECUTABLES:
+        found = shutil.which(name)
+        if found:
+            return found
+        for directory in extra_dirs:
+            for suffix in suffixes:
+                candidate = directory / f"{name}{suffix}"
+                if candidate.is_file() and os.access(candidate, os.X_OK):
+                    return str(candidate)
+    return None
+
+
+def describe_missing_js_runtime() -> str:
+    """Explica o que instalar quando não há runtime JavaScript."""
+    lines = [
+        "Nenhum runtime JavaScript encontrado (deno, bun, node ou qjs).",
+        "O YouTube passou a exigir a execução de um script para liberar os links "
+        "de áudio. Sem isso o download falha com 'Signature solving failed' e "
+        "'The page needs to be reloaded', por mais que os cookies estejam certos.",
+        "Instale um destes — o Deno é o recomendado pelo yt-dlp:",
+    ]
+    if os.name == "nt":
+        lines += [
+            "  winget install DenoLand.Deno",
+            "  ou baixe o deno.exe em https://github.com/denoland/deno/releases e "
+            "coloque na MESMA PASTA do PenDriveMaker.exe: o yt-dlp procura ali "
+            "quando o programa está empacotado.",
+            "  (o Node.js também serve: winget install OpenJS.NodeJS)",
+        ]
+    elif sys.platform == "darwin":
+        lines += ["  brew install deno", "  (o Node.js também serve: brew install node)"]
+    else:
+        lines += [
+            "  curl -fsSL https://deno.land/install.sh | sh",
+            "  (o Node.js também serve: sudo apt install nodejs)",
+        ]
+    lines.append("Depois de instalar, feche e abra o programa de novo.")
+    return "\n".join(lines)
+
+
 class Stopped(Exception):
     """Parada solicitada pelo usuário."""
 
 
 class CookieError(Exception):
     """Cookies configurados não puderam ser lidos: é problema de configuração."""
+
+
+class EnvironmentProblem(Exception):
+    """Falta algo na máquina (runtime JavaScript): repetir não resolve."""
 
 
 class BlockedTooOften(Exception):
@@ -275,10 +353,19 @@ class _YdlLogger:
 
 
 class DownloadEngine:
-    def __init__(self, config: AppConfig, store: QueueStore, callbacks: EngineCallbacks):
+    def __init__(
+        self,
+        config: AppConfig,
+        store: QueueStore,
+        callbacks: EngineCallbacks,
+        allow_missing_js_runtime: bool = False,
+    ):
         self.cfg = config
         self.store = store
         self.cb = callbacks
+        # O usuário pode insistir quando a detecção do runtime não acha nada:
+        # a busca cobre os lugares usuais, não todos os possíveis.
+        self.allow_missing_js_runtime = allow_missing_js_runtime
 
         self._stop = threading.Event()
         self._resume = threading.Event()
@@ -446,6 +533,21 @@ class DownloadEngine:
             self.cb.file_progress(100.0, f"processando ({event.get('postprocessor')})")
 
     # ------------------------------------------------------------- extração
+
+    def _verify_environment(self) -> None:
+        runtime = find_js_runtime()
+        if runtime is None:
+            if not self.allow_missing_js_runtime:
+                raise EnvironmentProblem(describe_missing_js_runtime())
+            self._log("warn", "Nenhum runtime JavaScript encontrado; seguindo assim mesmo.")
+        else:
+            self._log("info", f"Runtime JavaScript: {runtime}")
+        if shutil.which("ffmpeg") is None:
+            self._log(
+                "warn",
+                "ffmpeg não encontrado: o áudio será salvo no formato original, sem "
+                "conversão, sem metadados e sem capa.",
+            )
 
     def _verify_cookies(self) -> None:
         if self.cfg.cookies_mode == "none":
@@ -626,6 +728,7 @@ class DownloadEngine:
         reason = "Concluído"
         try:
             Path(self.cfg.output_dir).expanduser().mkdir(parents=True, exist_ok=True)
+            self._verify_environment()
             self._verify_cookies()
             self._extract_playlist(force=force_reextract)
             self._process_queue()
@@ -641,6 +744,11 @@ class DownloadEngine:
         except Stopped:
             reason = "Parado pelo usuário. A fila foi salva; clique em Iniciar para retomar."
             self._log("warn", reason)
+        except EnvironmentProblem as exc:
+            reason = str(exc)
+            for line in reason.splitlines():
+                self._log("error", line)
+            reason = reason.splitlines()[0]
         except (CookieError, CookieLoadError) as exc:
             reason = str(exc) if isinstance(exc, CookieError) else describe_cookie_failure(
                 self.cfg, [str(exc)]
@@ -688,7 +796,7 @@ class DownloadEngine:
             started = time.monotonic()
             try:
                 path, tags = self._download_one(item)
-            except (Stopped, CookieError, CookieLoadError):
+            except (Stopped, CookieError, CookieLoadError, EnvironmentProblem):
                 raise
             except (DownloadError, ExtractorError, OSError, RuntimeError) as exc:
                 self._last_download_ts = time.monotonic()
@@ -727,6 +835,27 @@ class DownloadEngine:
             self._log("error", f"Falha por bloqueio em '{item.title or item.video_id}': {message}")
             self._handle_block(message)
             return
+
+        if kind == ERROR_JS_RUNTIME:
+            runtime = find_js_runtime()
+            if runtime is None and not self.allow_missing_js_runtime:
+                # Sem runtime nada vai baixar: parar agora poupa a fila inteira.
+                raise EnvironmentProblem(describe_missing_js_runtime())
+            if runtime is None:
+                self._log(
+                    "warn",
+                    "Falha no desafio JavaScript e nenhum runtime encontrado. "
+                    "Instale o Deno para que os downloads funcionem.",
+                )
+            else:
+                # Com runtime presente, provavelmente é o yt-dlp desatualizado ou
+                # uma mudança recente do YouTube: ainda vale retentar, com a dica.
+                self._log(
+                    "warn",
+                    f"Falha ao resolver o desafio JavaScript usando {runtime}. "
+                    "Se repetir em todas as faixas, atualize o yt-dlp "
+                    "(pip install -U yt-dlp) ou baixe a versão mais nova do programa.",
+                )
 
         final = kind == ERROR_PERMANENT
         attempts = self.store.register_failure(
