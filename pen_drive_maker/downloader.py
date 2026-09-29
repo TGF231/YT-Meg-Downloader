@@ -1,0 +1,604 @@
+"""Motor de extração e download, independente da interface gráfica.
+
+Estratégia contra bloqueio do servidor:
+
+1. A playlist é extraída uma única vez em modo "flat" (``extract_flat``), ou
+   seja, sem resolver os metadados de cada faixa. Isso é uma requisição só,
+   mesmo para playlists de milhares de músicas.
+2. A fila vai para o disco (SQLite). Cada faixa só é resolvida e baixada
+   quando chega a sua vez e depois de um intervalo mínimo com jitter.
+3. Erros típicos de bloqueio (429, 403, verificação de robô) disparam pausa
+   com backoff exponencial; bloqueios repetidos encerram a execução de forma
+   limpa, com a fila intacta para retomada.
+"""
+
+from __future__ import annotations
+
+import random
+import re
+import threading
+import time
+import traceback
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
+
+from yt_dlp import YoutubeDL
+from yt_dlp.utils import DownloadError, ExtractorError
+
+from .config import AppConfig
+from .organizer import TrackTags, build_relative_path, resolve_tags, sanitize_component
+from .store import QueueItem, QueueStats, QueueStore
+
+# --------------------------------------------------------------------------- #
+# Classificação de erros
+# --------------------------------------------------------------------------- #
+
+# Sinais de que o servidor está limitando/bloqueando o cliente.
+BLOCK_PATTERNS = [
+    r"http error 429",
+    r"too many requests",
+    r"http error 403",
+    r"\bforbidden\b",
+    r"confirm you.{0,3}re not a bot",
+    r"not a bot",
+    r"this helps protect our community",
+    r"rate[ -]?limit",
+    r"temporarily blocked",
+    r"blocked from",
+    r"failed to extract any player response",
+    r"unable to download api page",
+    r"please solve the captcha",
+    r"use --cookies",
+]
+
+# Faixa que nunca vai baixar: não adianta tentar de novo nem contar como bloqueio.
+PERMANENT_PATTERNS = [
+    r"video unavailable",
+    r"private video",
+    r"removed by the uploader",
+    r"account associated with this video has been terminated",
+    r"this video is not available",
+    r"members[- ]only",
+    r"join this channel",
+    r"video has been removed",
+    r"is not available in your country",
+    r"who has blocked it",
+    r"age[- ]restricted",
+    r"confirm your age",
+    r"requested format is not available",
+]
+
+_BLOCK_RE = re.compile("|".join(BLOCK_PATTERNS), re.IGNORECASE)
+_PERMANENT_RE = re.compile("|".join(PERMANENT_PATTERNS), re.IGNORECASE)
+
+ERROR_BLOCK = "block"
+ERROR_PERMANENT = "permanent"
+ERROR_TRANSIENT = "transient"
+
+
+def classify_error(message: str) -> str:
+    text = message or ""
+    if _BLOCK_RE.search(text):
+        return ERROR_BLOCK
+    if _PERMANENT_RE.search(text):
+        return ERROR_PERMANENT
+    return ERROR_TRANSIENT
+
+
+class Stopped(Exception):
+    """Parada solicitada pelo usuário."""
+
+
+class BlockedTooOften(Exception):
+    """Bloqueios persistentes: encerramento limpo."""
+
+
+# --------------------------------------------------------------------------- #
+# Callbacks
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class EngineCallbacks:
+    """Ganchos para a interface. Todos opcionais."""
+
+    log: Callable[[str, str], None] = lambda level, message: None
+    status: Callable[[str], None] = lambda text: None
+    stats: Callable[[QueueStats], None] = lambda stats: None
+    item_done: Callable[[str, TrackTags], None] = lambda path, tags: None
+    file_progress: Callable[[float, str], None] = lambda percent, text: None
+    finished: Callable[[str], None] = lambda reason: None
+
+
+class _YdlLogger:
+    """Roteia as mensagens do yt-dlp para o log da aplicação."""
+
+    def __init__(self, emit: Callable[[str, str], None]):
+        self._emit = emit
+
+    def debug(self, msg: str) -> None:
+        # O yt-dlp manda as linhas de "[download] ..." como debug; só interessam
+        # as que não começam com o prefixo de depuração.
+        if msg.startswith("[debug] "):
+            return
+        self._emit("debug", msg)
+
+    def info(self, msg: str) -> None:
+        self._emit("debug", msg)
+
+    def warning(self, msg: str) -> None:
+        self._emit("warn", msg)
+
+    def error(self, msg: str) -> None:
+        self._emit("error", msg)
+
+
+# --------------------------------------------------------------------------- #
+# Motor
+# --------------------------------------------------------------------------- #
+
+
+class DownloadEngine:
+    def __init__(self, config: AppConfig, store: QueueStore, callbacks: EngineCallbacks):
+        self.cfg = config
+        self.store = store
+        self.cb = callbacks
+
+        self._stop = threading.Event()
+        self._resume = threading.Event()
+        self._resume.set()  # começa "não pausado"
+
+        self._block_events = 0
+        self._consecutive_failures = 0
+        self._last_download_ts: Optional[float] = None
+        self._last_progress_ts = 0.0
+        self._logger = _YdlLogger(self._log)
+
+    # ------------------------------------------------------------- controles
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._resume.set()  # destrava quem estiver esperando na pausa
+
+    def pause(self) -> None:
+        self._resume.clear()
+
+    def resume(self) -> None:
+        self._resume.set()
+
+    @property
+    def is_paused(self) -> bool:
+        return not self._resume.is_set()
+
+    # ------------------------------------------------------------- utilidades
+
+    def _log(self, level: str, message: str) -> None:
+        self.cb.log(level, message.rstrip())
+
+    def _status(self, text: str) -> None:
+        self.cb.status(text)
+
+    def _emit_stats(self) -> None:
+        self.cb.stats(self.store.stats())
+
+    def _check_control(self) -> None:
+        """Bloqueia enquanto pausado; levanta Stopped se o usuário parou."""
+        if self._stop.is_set():
+            raise Stopped()
+        if self.is_paused:
+            self._status("Pausado")
+            self._log("info", "Pausado pelo usuário.")
+            while not self._resume.wait(timeout=0.25):
+                if self._stop.is_set():
+                    raise Stopped()
+            if self._stop.is_set():
+                raise Stopped()
+            self._log("info", "Retomando.")
+
+    def _sleep(self, seconds: float, label: str) -> None:
+        """Espera interrompível, com contagem regressiva na barra de status."""
+        deadline = time.monotonic() + seconds
+        while True:
+            self._check_control()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            self._status(f"{label} {self._fmt_duration(remaining)}")
+            if self._stop.wait(timeout=min(1.0, remaining)):
+                raise Stopped()
+
+    @staticmethod
+    def _fmt_duration(seconds: float) -> str:
+        seconds = int(max(0, seconds))
+        if seconds < 60:
+            return f"{seconds}s"
+        minutes, secs = divmod(seconds, 60)
+        if minutes < 60:
+            return f"{minutes}min {secs:02d}s"
+        hours, minutes = divmod(minutes, 60)
+        return f"{hours}h {minutes:02d}min"
+
+    # -------------------------------------------------------- opções do yt-dlp
+
+    def _auth_opts(self) -> Dict[str, Any]:
+        opts: Dict[str, Any] = {}
+        if self.cfg.cookies_mode == "file" and self.cfg.cookies_file:
+            opts["cookiefile"] = str(Path(self.cfg.cookies_file).expanduser())
+        elif self.cfg.cookies_mode == "browser" and self.cfg.cookies_browser:
+            # Formato esperado: (navegador, perfil, keyring, container)
+            opts["cookiesfrombrowser"] = (self.cfg.cookies_browser, None, None, None)
+        return opts
+
+    def _base_opts(self) -> Dict[str, Any]:
+        opts: Dict[str, Any] = {
+            "quiet": True,
+            "no_warnings": False,
+            "noprogress": True,
+            "consoletitle": False,
+            "logger": self._logger,
+            "ignoreerrors": False,
+            "noplaylist": True,
+            "retries": 2,
+            "fragment_retries": 4,
+            "extractor_retries": 1,
+            "socket_timeout": 30,
+            # Espaça as requisições internas de um mesmo item (player, api, etc).
+            "sleep_interval_requests": 1,
+        }
+        opts.update(self._auth_opts())
+        return opts
+
+    def _postprocessors(self) -> List[Dict[str, Any]]:
+        pps: List[Dict[str, Any]] = []
+        if self.cfg.audio_format != "best":
+            pps.append(
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": self.cfg.audio_format,
+                    # "0" = melhor qualidade disponível no codec escolhido.
+                    "preferredquality": "0",
+                    "nopostoverwrites": False,
+                }
+            )
+        if self.cfg.embed_metadata:
+            pps.append({"key": "FFmpegMetadata", "add_metadata": True, "add_chapters": False})
+        if self.cfg.embed_thumbnail:
+            pps.append({"key": "EmbedThumbnail", "already_have_thumbnail": False})
+        return pps
+
+    def _probe_opts(self) -> Dict[str, Any]:
+        opts = self._base_opts()
+        opts.update({"skip_download": True, "format": "bestaudio/best"})
+        return opts
+
+    def _download_opts(self, outtmpl: str) -> Dict[str, Any]:
+        opts = self._base_opts()
+        opts.update(
+            {
+                "format": "bestaudio/best",
+                "outtmpl": {"default": outtmpl},
+                "postprocessors": self._postprocessors(),
+                "writethumbnail": self.cfg.embed_thumbnail,
+                "prefer_ffmpeg": True,
+                "overwrites": False,
+                "continuedl": True,
+                "progress_hooks": [self._progress_hook],
+                "postprocessor_hooks": [self._postprocessor_hook],
+            }
+        )
+        return opts
+
+    def _progress_hook(self, event: Dict[str, Any]) -> None:
+        if self._stop.is_set():
+            # Interrompe o download em andamento; o yt-dlp propaga a exceção.
+            raise Stopped()
+        if event.get("status") != "downloading":
+            return
+        now = time.monotonic()
+        if now - self._last_progress_ts < 0.3:
+            return
+        self._last_progress_ts = now
+        total = event.get("total_bytes") or event.get("total_bytes_estimate") or 0
+        done = event.get("downloaded_bytes") or 0
+        percent = (done / total * 100.0) if total else 0.0
+        speed = event.get("speed")
+        speed_txt = f"{speed / 1024:.0f} KiB/s" if speed else "--"
+        self.cb.file_progress(percent, f"{percent:5.1f}% a {speed_txt}")
+
+    def _postprocessor_hook(self, event: Dict[str, Any]) -> None:
+        if event.get("status") == "started":
+            self.cb.file_progress(100.0, f"processando ({event.get('postprocessor')})")
+
+    # ------------------------------------------------------------- extração
+
+    def _extract_playlist(self, force: bool = False) -> None:
+        url = self.cfg.playlist_url.strip()
+        existing = self.store.get_playlist()
+        if (
+            not force
+            and existing is not None
+            and existing["url"] == url
+            and self.store.count() > 0
+        ):
+            self._log(
+                "info",
+                f"Playlist já extraída em {existing['extracted_at']} "
+                f"({self.store.count()} faixas). Retomando a fila existente.",
+            )
+            return
+
+        self._status("Extraindo lista de faixas (modo flat)...")
+        self._log("info", f"Extraindo playlist: {url}")
+        opts = self._base_opts()
+        opts.update(
+            {
+                # 'in_playlist' devolve só id/título/URL de cada faixa: uma
+                # requisição para a playlist inteira, sem tocar em cada vídeo.
+                "extract_flat": "in_playlist",
+                "skip_download": True,
+                "noplaylist": False,
+                "ignoreerrors": True,
+            }
+        )
+        with YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+        if not info:
+            raise RuntimeError("Não foi possível extrair a playlist (resposta vazia).")
+
+        entries = list(self._flatten_entries(info))
+        if not entries:
+            raise RuntimeError(
+                "A playlist não retornou nenhuma faixa. Verifique a URL ou use cookies "
+                "se a playlist for privada."
+            )
+
+        title = info.get("title") or "Playlist"
+        if existing is not None and existing["url"] != url:
+            self._log("warn", "URL diferente da playlist anterior: a fila será recriada.")
+            self.store.clear_all()
+
+        self.store.set_playlist(url, title)
+        inserted = self.store.add_items(entries)
+        self._log(
+            "info",
+            f'Playlist "{title}": {len(entries)} faixas ({inserted} novas na fila).',
+        )
+        self._emit_stats()
+
+    def _flatten_entries(self, info: Dict[str, Any]):
+        """Percorre playlists aninhadas e devolve as faixas em ordem."""
+        entries = info.get("entries")
+        if entries is None:
+            if info.get("id"):
+                yield self._entry_to_row(info)
+            return
+        for entry in entries:
+            if not entry:
+                continue
+            if entry.get("_type") in ("playlist", "multi_video") or entry.get("entries"):
+                yield from self._flatten_entries(entry)
+            else:
+                row = self._entry_to_row(entry)
+                if row:
+                    yield row
+
+    @staticmethod
+    def _entry_to_row(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        video_id = entry.get("id")
+        if not video_id:
+            return None
+        url = entry.get("url") or entry.get("webpage_url")
+        if not url or not str(url).startswith("http"):
+            url = f"https://www.youtube.com/watch?v={video_id}"
+        return {"video_id": str(video_id), "url": str(url), "title": entry.get("title") or ""}
+
+    # ------------------------------------------------------------- download
+
+    def _outtmpl_for(self, tags: TrackTags) -> str:
+        relative = build_relative_path(tags, self.cfg.ascii_only, self.cfg.max_component_len)
+        base = Path(self.cfg.output_dir).expanduser().resolve() / relative
+        # O outtmpl é uma string de formatação: '%' literal precisa ser escapado.
+        return str(base).replace("%", "%%") + ".%(ext)s"
+
+    def _download_one(self, item: QueueItem) -> tuple[str, TrackTags]:
+        """Resolve metadados e baixa uma faixa. Uma extração de rede por faixa."""
+        with YoutubeDL(self._probe_opts()) as probe:
+            info = probe.extract_info(item.url, download=False)
+        if not info:
+            raise RuntimeError("Metadados vazios.")
+
+        tags = resolve_tags(info, self.cfg.default_genre, self.cfg.default_album)
+        outtmpl = self._outtmpl_for(tags)
+        self._log(
+            "info",
+            f"Destino: {sanitize_component(tags.genre, self.cfg.ascii_only)}/"
+            f"{sanitize_component(tags.artist, self.cfg.ascii_only)}/"
+            f"{sanitize_component(tags.album, self.cfg.ascii_only)}/",
+        )
+
+        # Reaproveita o dicionário já extraído (mesmo caminho do --load-info-json
+        # do yt-dlp), então o download não faz uma segunda extração de página.
+        payload = YoutubeDL.sanitize_info(info, remove_private_keys=True)
+        with YoutubeDL(self._download_opts(outtmpl)) as ydl:
+            try:
+                result = ydl.process_ie_result(payload, download=True)
+            except Stopped:
+                raise
+            except Exception as exc:
+                if classify_error(str(exc)) != ERROR_TRANSIENT:
+                    raise
+                # Informações defasadas (URLs de mídia expiram): refaz pela URL.
+                self._log("warn", f"Reaproveitamento falhou ({exc}); baixando pela URL.")
+                result = ydl.extract_info(item.url, download=True)
+
+        path = self._final_path(result)
+        return path, tags
+
+    @staticmethod
+    def _final_path(result: Optional[Dict[str, Any]]) -> str:
+        if not result:
+            return ""
+        downloads = result.get("requested_downloads") or []
+        if downloads:
+            entry = downloads[0]
+            return entry.get("filepath") or entry.get("_filename") or ""
+        return result.get("filepath") or result.get("_filename") or ""
+
+    # ------------------------------------------------------------- bloqueios
+
+    def _handle_block(self, reason: str) -> None:
+        self._block_events += 1
+        if self._block_events > self.cfg.max_block_events:
+            raise BlockedTooOften(reason)
+
+        backoff = min(
+            self.cfg.block_base_backoff * (2 ** (self._block_events - 1)),
+            self.cfg.block_max_backoff,
+        )
+        backoff *= 1.0 + random.uniform(0.0, 0.25)
+        self._log(
+            "error",
+            f"Bloqueio detectado ({self._block_events}/{self.cfg.max_block_events}): {reason}",
+        )
+        self._log("warn", f"Pausando {self._fmt_duration(backoff)} antes de tentar de novo.")
+        self._sleep(backoff, "Aguardando após bloqueio:")
+        self._log("info", "Retomando a fila após o backoff.")
+
+    def _wait_rate_limit(self) -> None:
+        if self._last_download_ts is None:
+            return  # primeira faixa da sessão: sem espera
+        delay = self.cfg.min_interval + random.uniform(0.0, self.cfg.jitter)
+        elapsed = time.monotonic() - self._last_download_ts
+        remaining = delay - elapsed
+        if remaining > 0:
+            self._sleep(remaining, "Aguardando intervalo:")
+
+    # ------------------------------------------------------------- execução
+
+    def run(self, force_reextract: bool = False) -> None:
+        reason = "Concluído"
+        try:
+            Path(self.cfg.output_dir).expanduser().mkdir(parents=True, exist_ok=True)
+            self._extract_playlist(force=force_reextract)
+            self._process_queue()
+            stats = self.store.stats()
+            if stats.failed:
+                reason = (
+                    f"Fila concluída com {stats.failed} falha(s). "
+                    "Use 'Reenfileirar falhas' para tentar de novo."
+                )
+            else:
+                reason = f"Fila concluída: {stats.done} faixa(s) baixada(s)."
+            self._log("info", reason)
+        except Stopped:
+            reason = "Parado pelo usuário. A fila foi salva; clique em Iniciar para retomar."
+            self._log("warn", reason)
+        except BlockedTooOften as exc:
+            reason = (
+                f"Encerrado por bloqueios repetidos do servidor ({exc}). "
+                "A fila está salva no diretório de saída."
+            )
+            self._log("error", reason)
+            self._log(
+                "info",
+                "Para retomar: aguarde algumas horas, informe cookies do navegador, "
+                "aumente o intervalo entre downloads e clique em Iniciar novamente. "
+                "Nada já baixado será repetido.",
+            )
+        except Exception as exc:  # falha inesperada: registra e encerra limpo
+            reason = f"Erro inesperado: {exc}"
+            self._log("error", reason)
+            self._log("debug", traceback.format_exc())
+        finally:
+            self._emit_stats()
+            self._status("Ocioso")
+            self.cb.finished(reason)
+
+    def _process_queue(self) -> None:
+        while True:
+            self._check_control()
+            item = self.store.next_pending()
+            if item is None:
+                return
+
+            stats = self.store.stats()
+            position = stats.done + stats.failed + 1
+            label = item.title or item.video_id
+            self._status(f"[{position}/{stats.total}] {label}")
+
+            self._wait_rate_limit()
+            self._check_control()
+
+            self._log("info", f"[{position}/{stats.total}] Baixando: {label}")
+            started = time.monotonic()
+            try:
+                path, tags = self._download_one(item)
+            except Stopped:
+                raise
+            except (DownloadError, ExtractorError, OSError, RuntimeError) as exc:
+                self._last_download_ts = time.monotonic()
+                self._on_item_error(item, exc)
+            except Exception as exc:  # erro fora do previsto no yt-dlp
+                self._last_download_ts = time.monotonic()
+                self._on_item_error(item, exc)
+            else:
+                self._last_download_ts = time.monotonic()
+                self._consecutive_failures = 0
+                self._block_events = 0  # sucesso limpa o histórico de bloqueios
+                # Guarda os nomes já saneados: é o que existe de fato no disco.
+                genre, artist, album = (
+                    sanitize_component(part, self.cfg.ascii_only, self.cfg.max_component_len)
+                    for part in tags.folder_parts()
+                )
+                self.store.mark_done(item.video_id, path, genre, artist, album, tags.title)
+                self._log(
+                    "ok",
+                    f"OK em {time.monotonic() - started:.0f}s: {path or '(caminho não informado)'}",
+                )
+                self.cb.item_done(path, tags)
+            finally:
+                self._emit_stats()
+
+    def _on_item_error(self, item: QueueItem, exc: Exception) -> None:
+        if self._stop.is_set():
+            # A parada foi sinalizada de dentro do hook de progresso e o yt-dlp
+            # pode tê-la embrulhado num DownloadError: não conta como falha.
+            raise Stopped()
+        message = str(exc).strip() or exc.__class__.__name__
+        kind = classify_error(message)
+
+        if kind == ERROR_BLOCK:
+            # Bloqueio não é culpa da faixa: não gasta retentativa dela.
+            self._log("error", f"Falha por bloqueio em '{item.title or item.video_id}': {message}")
+            self._handle_block(message)
+            return
+
+        final = kind == ERROR_PERMANENT
+        attempts = self.store.register_failure(
+            item.video_id, message, self.cfg.max_retries, final=final
+        )
+        if final:
+            self._log("warn", f"Faixa indisponível, ignorada: {item.title} — {message}")
+            self._consecutive_failures = 0
+            return
+
+        if attempts >= self.cfg.max_retries:
+            self._log(
+                "error",
+                f"Falhou {attempts}x, marcada como falha: {item.title} — {message}",
+            )
+        else:
+            self._log(
+                "warn",
+                f"Falha {attempts}/{self.cfg.max_retries} em '{item.title}': {message}",
+            )
+
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self.cfg.max_consecutive_failures:
+            self._consecutive_failures = 0
+            self._handle_block(
+                f"{self.cfg.max_consecutive_failures} falhas consecutivas "
+                "(provável bloqueio do servidor)"
+            )

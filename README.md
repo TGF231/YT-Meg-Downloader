@@ -1,0 +1,155 @@
+# Pen Drive Maker
+
+Ferramenta gráfica (PySide6) para baixar playlists grandes do YouTube Music
+usando a **API Python do `yt-dlp`**, sem disparar o bloqueio do servidor que
+costuma travar outras ferramentas por volta de 500 músicas — e já organizando
+os arquivos na estrutura de pastas de um pen drive automotivo.
+
+```
+<saída>/
+├── MPB/
+│   └── Djavan/
+│       └── Luz/
+│           ├── 01 - Flor de Lis.mp3
+│           └── 02 - Sina.mp3
+└── Rock/
+    └── Legiao Urbana/
+        └── Dois/
+            └── 03 - Eduardo e Monica.mp3
+```
+
+## Por que não trava em playlists grandes
+
+O gargalo das ferramentas comuns é pedir os metadados de todas as faixas de uma
+vez: centenas de requisições em rajada, e o YouTube responde com `429`,
+`403` ou a verificação de robô. Aqui o fluxo é separado em duas fases:
+
+1. **Extração** — uma única requisição em modo *flat* (`extract_flat`) traz
+   apenas id, título e URL de cada faixa. Uma playlist de 5.000 músicas custa
+   uma requisição.
+2. **Download** — a faixa só tem os metadados resolvidos e é baixada quando
+   chega a sua vez na fila **e** depois do intervalo mínimo configurado, com
+   jitter aleatório somado para não formar um padrão mecânico.
+
+Cada faixa gasta **uma** extração de rede: o dicionário de informações obtido é
+reaproveitado no download (mesmo caminho do `--load-info-json` do `yt-dlp`), em
+vez de extrair a página duas vezes.
+
+## Instalação
+
+```bash
+pip install -r requirements.txt
+```
+
+O `ffmpeg` precisa estar no `PATH` para conversão de formato, gravação de
+metadados e capa embutida. A interface avisa se ele não for encontrado.
+
+```bash
+# Debian/Ubuntu
+sudo apt install ffmpeg
+```
+
+## Uso
+
+```bash
+python main.py
+```
+
+1. Cole a URL da playlist (`https://music.youtube.com/playlist?list=...`).
+2. Escolha o diretório de saída — pode ser a raiz do pen drive.
+3. Ajuste o intervalo entre downloads e, se quiser, informe cookies.
+4. **Iniciar / Retomar**.
+
+As configurações ficam salvas entre execuções (`QSettings`).
+
+### Retomada
+
+A fila fica em `<saída>/.pen-drive-maker/queue.db` (SQLite). Fechar o programa,
+parar no meio ou ser bloqueado não perde nada: ao clicar em **Iniciar /
+Retomar** com o mesmo diretório de saída, a playlist **não** é reextraída e as
+faixas já baixadas **não** são repetidas.
+
+| Botão | O que faz |
+|---|---|
+| Iniciar / Retomar | Começa ou continua a fila |
+| Pausar / Retomar | Pausa entre faixas, sem perder o estado |
+| Parar | Encerra de forma limpa após a faixa atual |
+| Reenfileirar falhas | Devolve as faixas marcadas como falha para a fila |
+| Reextrair playlist | Rebusca a lista (para playlists que ganharam músicas novas) |
+
+### Cookies
+
+Cookies de uma conta logada reduzem bastante a chance de bloqueio e são
+necessários para playlists privadas. Duas opções:
+
+- **Arquivo `cookies.txt`** no formato Netscape (extensões de navegador geram).
+- **Direto do navegador** — o `yt-dlp` lê o perfil instalado. Feche o navegador
+  antes, senão o banco de cookies fica travado.
+
+## Detecção de bloqueio
+
+O motor classifica cada erro em três categorias:
+
+| Categoria | Exemplos | Ação |
+|---|---|---|
+| **Bloqueio** | `HTTP Error 429`, `403`, `Sign in to confirm you're not a bot` | Pausa com backoff exponencial (padrão: 120 s, dobrando, teto de 1 h) e retoma. Não gasta tentativa da faixa. |
+| **Permanente** | vídeo privado, removido, só para membros | Marca a faixa como falha e segue. Não tenta de novo. |
+| **Transitório** | timeout, rede | Tenta de novo até o limite configurado. |
+
+Falhas consecutivas (padrão: 5) também contam como bloqueio, porque é assim que
+o bloqueio costuma aparecer na prática. Um download bem-sucedido zera o
+contador de bloqueios. Se os bloqueios persistirem (padrão: 5 eventos), a
+ferramenta **encerra de forma limpa** e explica no log como retomar.
+
+### Se for bloqueado
+
+1. Espere algumas horas.
+2. Aumente o intervalo mínimo (60 s ou mais para playlists muito grandes).
+3. Informe cookies de uma conta logada.
+4. Clique em **Iniciar / Retomar** — nada já baixado é repetido.
+
+## Organização das pastas
+
+`<saída>/<Gênero>/<Artista>/<Álbum>/<NN - Título>.<ext>`
+
+- **Gênero** vem dos metadados quando existem; o YouTube Music raramente os
+  expõe, então faixas sem gênero caem na pasta configurada (padrão
+  `Sem Genero`).
+- **Artista** usa `album_artist` → `artists` → `artist` → canal, nessa ordem.
+  O sufixo `- Topic` é removido e participações (`feat.`, `ft.`, `with`) vão
+  para a pasta do artista principal. Nomes com `&` e vírgula são preservados
+  inteiros (`Earth, Wind & Fire` não vira `Earth`).
+- **Álbum** ausente vira `Singles`.
+- Nomes são saneados para FAT32/exFAT: sem `<>:"/\|?*`, sem caracteres de
+  controle, sem ponto ou espaço no fim, sem nomes reservados (`CON`, `LPT1`…),
+  limitados em tamanho. A opção **Somente ASCII** (ligada por padrão) remove
+  acentos, porque muitos aparelhos automotivos não leem UTF-8.
+
+## Formatos de áudio
+
+| Opção | Quando usar |
+|---|---|
+| **MP3** (padrão) | Máxima compatibilidade automotiva. Reconvertido em VBR de melhor qualidade. |
+| **M4A / AAC** | Melhor qualidade: o YouTube entrega AAC, então é remux sem reconversão. |
+| **Opus** | Menor tamanho; pouco suportado em carros. |
+| **Melhor original** | Sem conversão nenhuma. |
+
+Metadados e capa são embutidos quando o formato de destino suporta.
+
+## Estrutura do código
+
+| Arquivo | Conteúdo |
+|---|---|
+| `main.py` | Ponto de entrada |
+| `pen_drive_maker/config.py` | `AppConfig` e validação |
+| `pen_drive_maker/store.py` | Fila persistente em SQLite |
+| `pen_drive_maker/organizer.py` | Metadados → pastas, saneamento de nomes |
+| `pen_drive_maker/downloader.py` | Motor: extração, ritmo, bloqueios, download |
+| `pen_drive_maker/gui.py` | Interface PySide6 |
+| `tests/test_engine.py` | Testes offline do motor (`yt-dlp` substituído) |
+
+Dependências: apenas `PySide6` e `yt-dlp`.
+
+```bash
+python -m unittest discover -s tests -v
+```
