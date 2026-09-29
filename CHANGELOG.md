@@ -3,6 +3,30 @@
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o
 versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
+## [1.0.4] - 2026-09-29
+
+### Corrigido
+
+- **O ffmpeg não era detectado mesmo estando no PATH.** A busca usava só o
+  `shutil.which`, que não trata três formatos de entrada de PATH que o shell do
+  Windows aceita: entre aspas (`"C:\ffmpeg\bin"`), com variável não expandida
+  (`%USERPROFILE%\bin`, quando a chave do registro é REG_SZ) e com espaços
+  sobrando. Qualquer uma delas fazia o programa dizer que o ffmpeg não estava
+  instalado.
+- **O caminho do ffmpeg não era repassado ao yt-dlp.** Mesmo quando a interface
+  o encontrava, o yt-dlp refazia a busca por conta própria e falhava de novo.
+  Agora recebe `ffmpeg_location`.
+
+### Adicionado
+
+- Campo "ffmpeg" na interface, com botões Procurar e Testar, para apontar o
+  executável ou a pasta quando a detecção automática não bastar.
+- Busca nos locais usuais de instalação do Windows: atalhos e pacotes do
+  winget, chocolatey, scoop, `C:\ffmpeg\bin` e `Program Files`.
+- Cada candidato é confirmado executando `-version`, sem piscar console.
+- Módulo `pen_drive_maker/tools.py` reunindo a localização de ferramentas
+  externas, com 17 testes.
+
 ## [1.0.3] - 2026-09-29
 
 ### Corrigido
@@ -84,6 +108,7 @@ Primeira versão.
 - Interface PySide6 com contadores, barras de progresso, log colorido, árvore
   da estrutura de pastas criada e controles de pausar, retomar e parar.
 
+[1.0.4]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.0.4
 [1.0.3]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.0.3
 [1.0.2]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.0.2
 [1.0.1]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.0.1

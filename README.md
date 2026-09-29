@@ -85,7 +85,9 @@ instalar nada: baixe o `deno.exe` e coloque **na mesma pasta do
 empacotado.
 
 **2. ffmpeg — necessário para converter.** Sem ele o áudio é salvo no formato
-original, sem conversão para MP3, sem metadados e sem capa.
+original, sem conversão para MP3, sem metadados e sem capa. Se a detecção
+automática não achar, aponte o caminho no campo **ffmpeg** da interface e use
+**Testar** para conferir.
 
 ```bash
 winget install Gyan.FFmpeg       # Windows
@@ -128,6 +130,21 @@ necessários para playlists privadas. Duas opções:
 Os cookies são testados assim que você clica em **Iniciar**, antes de qualquer
 requisição: se falharem, a ferramenta explica o motivo e oferece seguir sem
 eles naquela execução.
+
+#### "ffmpeg não encontrado" mesmo estando no PATH
+
+O `PATH` do Windows aceita formatos que as bibliotecas do Python não resolvem.
+A partir da 1.0.4 a busca normaliza entradas entre aspas, com variáveis não
+expandidas e com espaços sobrando, e ainda procura nos locais de instalação do
+winget, chocolatey e scoop. Se mesmo assim não achar:
+
+1. Clique em **Testar**, ao lado do campo **ffmpeg**, para ver o que a busca
+   encontra.
+2. Use **Procurar...** e aponte para o `ffmpeg.exe`. O caminho fica salvo.
+3. Ou coloque o `ffmpeg.exe` na mesma pasta do `PenDriveMaker.exe`.
+
+Vale lembrar que uma alteração no `PATH` só vale para programas abertos depois
+dela — se você acabou de instalar, feche e abra o programa.
 
 #### `The page needs to be reloaded` / `Signature solving failed`
 
@@ -223,9 +240,11 @@ Metadados e capa são embutidos quando o formato de destino suporta.
 | `pen_drive_maker/config.py` | `AppConfig` e validação |
 | `pen_drive_maker/store.py` | Fila persistente em SQLite |
 | `pen_drive_maker/organizer.py` | Metadados → pastas, saneamento de nomes |
+| `pen_drive_maker/tools.py` | Localização do ffmpeg e do runtime JavaScript |
 | `pen_drive_maker/downloader.py` | Motor: extração, ritmo, bloqueios, download |
 | `pen_drive_maker/gui.py` | Interface PySide6 |
 | `tests/test_engine.py` | Testes offline do motor (`yt-dlp` substituído) |
+| `tests/test_tools.py` | Testes da detecção de ferramentas externas |
 | `pyproject.toml` | Metadados do pacote e entry point `pen-drive-maker` |
 | `packaging.spec` | Receita do PyInstaller para o executável standalone |
 | `.github/workflows/release.yml` | Testes, build e publicação da release na tag |

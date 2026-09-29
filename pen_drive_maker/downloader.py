@@ -14,11 +14,8 @@ Estratégia contra bloqueio do servidor:
 
 from __future__ import annotations
 
-import os
 import random
 import re
-import shutil
-import sys
 import threading
 import time
 import traceback
@@ -32,6 +29,12 @@ from yt_dlp.utils import DownloadError, ExtractorError
 
 from .config import AppConfig
 from .organizer import TrackTags, build_relative_path, resolve_tags, sanitize_component
+from .tools import (  # reexportados: a interface e os testes importam daqui
+    describe_missing_ffmpeg,
+    describe_missing_js_runtime,
+    find_ffmpeg,
+    find_js_runtime,
+)
 from .store import QueueItem, QueueStats, QueueStore
 
 # --------------------------------------------------------------------------- #
@@ -235,62 +238,6 @@ def check_cookies(cfg: "AppConfig") -> Optional[str]:
     return None
 
 
-# Nomes dos executáveis aceitos pelo yt-dlp, na ordem de preferência dele.
-JS_RUNTIME_EXECUTABLES = ("deno", "bun", "node", "qjs")
-
-
-def find_js_runtime() -> Optional[str]:
-    """Procura um runtime JavaScript onde o yt-dlp procura.
-
-    Além do PATH, o yt-dlp olha a pasta do próprio executável quando o programa
-    está empacotado, então basta colocar o deno.exe ao lado do PenDriveMaker.exe.
-    """
-    extra_dirs: List[Path] = []
-    if getattr(sys, "frozen", False):
-        extra_dirs.append(Path(sys.executable).resolve().parent)
-    extra_dirs.append(Path.cwd())
-
-    suffixes = ("", ".exe", ".cmd", ".bat") if os.name == "nt" else ("",)
-    for name in JS_RUNTIME_EXECUTABLES:
-        found = shutil.which(name)
-        if found:
-            return found
-        for directory in extra_dirs:
-            for suffix in suffixes:
-                candidate = directory / f"{name}{suffix}"
-                if candidate.is_file() and os.access(candidate, os.X_OK):
-                    return str(candidate)
-    return None
-
-
-def describe_missing_js_runtime() -> str:
-    """Explica o que instalar quando não há runtime JavaScript."""
-    lines = [
-        "Nenhum runtime JavaScript encontrado (deno, bun, node ou qjs).",
-        "O YouTube passou a exigir a execução de um script para liberar os links "
-        "de áudio. Sem isso o download falha com 'Signature solving failed' e "
-        "'The page needs to be reloaded', por mais que os cookies estejam certos.",
-        "Instale um destes — o Deno é o recomendado pelo yt-dlp:",
-    ]
-    if os.name == "nt":
-        lines += [
-            "  winget install DenoLand.Deno",
-            "  ou baixe o deno.exe em https://github.com/denoland/deno/releases e "
-            "coloque na MESMA PASTA do PenDriveMaker.exe: o yt-dlp procura ali "
-            "quando o programa está empacotado.",
-            "  (o Node.js também serve: winget install OpenJS.NodeJS)",
-        ]
-    elif sys.platform == "darwin":
-        lines += ["  brew install deno", "  (o Node.js também serve: brew install node)"]
-    else:
-        lines += [
-            "  curl -fsSL https://deno.land/install.sh | sh",
-            "  (o Node.js também serve: sudo apt install nodejs)",
-        ]
-    lines.append("Depois de instalar, feche e abra o programa de novo.")
-    return "\n".join(lines)
-
-
 class Stopped(Exception):
     """Parada solicitada pelo usuário."""
 
@@ -366,6 +313,7 @@ class DownloadEngine:
         # O usuário pode insistir quando a detecção do runtime não acha nada:
         # a busca cobre os lugares usuais, não todos os possíveis.
         self.allow_missing_js_runtime = allow_missing_js_runtime
+        self._ffmpeg_path: Optional[str] = None
 
         self._stop = threading.Event()
         self._resume = threading.Event()
@@ -468,6 +416,10 @@ class DownloadEngine:
             # Espaça as requisições internas de um mesmo item (player, api, etc).
             "sleep_interval_requests": 1,
         }
+        # Sem isto o yt-dlp procura o ffmpeg por conta própria no PATH, e volta a
+        # falhar exatamente nos casos que a nossa busca resolveu.
+        if self._ffmpeg_path:
+            opts["ffmpeg_location"] = self._ffmpeg_path
         opts.update(self._auth_opts())
         return opts
 
@@ -542,12 +494,12 @@ class DownloadEngine:
             self._log("warn", "Nenhum runtime JavaScript encontrado; seguindo assim mesmo.")
         else:
             self._log("info", f"Runtime JavaScript: {runtime}")
-        if shutil.which("ffmpeg") is None:
-            self._log(
-                "warn",
-                "ffmpeg não encontrado: o áudio será salvo no formato original, sem "
-                "conversão, sem metadados e sem capa.",
-            )
+        self._ffmpeg_path = find_ffmpeg(self.cfg.ffmpeg_path)
+        if self._ffmpeg_path:
+            self._log("info", f"ffmpeg: {self._ffmpeg_path}")
+        else:
+            for line in describe_missing_ffmpeg(self.cfg.ffmpeg_path).splitlines():
+                self._log("warn", line)
 
     def _verify_cookies(self) -> None:
         if self.cfg.cookies_mode == "none":

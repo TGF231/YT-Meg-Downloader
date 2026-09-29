@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import shutil
 import sys
 from pathlib import Path
 from typing import Dict, Optional
@@ -35,11 +33,11 @@ from PySide6.QtWidgets import (
 )
 
 from .config import AUDIO_FORMATS, BROWSERS, AppConfig
-from .downloader import (
-    DownloadEngine,
-    EngineCallbacks,
-    check_cookies,
+from .downloader import DownloadEngine, EngineCallbacks, check_cookies
+from .tools import (
+    describe_missing_ffmpeg,
     describe_missing_js_runtime,
+    find_ffmpeg,
     find_js_runtime,
 )
 from .organizer import TrackTags, sanitize_component
@@ -222,6 +220,18 @@ class MainWindow(QMainWindow):
             self.audio_format.addItem(label, key)
         form.addRow("Formato de saída:", self.audio_format)
 
+        ffmpeg_row = QHBoxLayout()
+        self.ffmpeg_path = QLineEdit()
+        self.ffmpeg_path.setPlaceholderText("vazio = detectar automaticamente")
+        ffmpeg_browse = QPushButton("Procurar...")
+        ffmpeg_browse.clicked.connect(self._choose_ffmpeg)
+        ffmpeg_check = QPushButton("Testar")
+        ffmpeg_check.clicked.connect(self._report_ffmpeg)
+        ffmpeg_row.addWidget(self.ffmpeg_path, 1)
+        ffmpeg_row.addWidget(ffmpeg_browse)
+        ffmpeg_row.addWidget(ffmpeg_check)
+        form.addRow("ffmpeg:", ffmpeg_row)
+
         self.embed_metadata = QCheckBox("Gravar metadados na tag do arquivo")
         self.embed_thumbnail = QCheckBox("Embutir capa do álbum")
         form.addRow("", self.embed_metadata)
@@ -339,6 +349,7 @@ class MainWindow(QMainWindow):
         self.block_backoff.setValue(float(cfg.block_base_backoff))
         self.max_blocks.setValue(int(cfg.max_block_events))
         self._select_data(self.audio_format, cfg.audio_format)
+        self.ffmpeg_path.setText(str(cfg.ffmpeg_path))
         self.embed_metadata.setChecked(_as_bool(cfg.embed_metadata))
         self.embed_thumbnail.setChecked(_as_bool(cfg.embed_thumbnail))
         self.ascii_only.setChecked(_as_bool(cfg.ascii_only))
@@ -368,6 +379,7 @@ class MainWindow(QMainWindow):
             min_interval=self.min_interval.value(),
             jitter=self.jitter.value(),
             audio_format=self.audio_format.currentData(),
+            ffmpeg_path=self.ffmpeg_path.text().strip(),
             embed_thumbnail=self.embed_thumbnail.isChecked(),
             embed_metadata=self.embed_metadata.isChecked(),
             cookies_mode=self.cookies_mode.currentData(),
@@ -392,6 +404,27 @@ class MainWindow(QMainWindow):
         if chosen:
             self.output_edit.setText(chosen)
 
+    def _choose_ffmpeg(self) -> None:
+        chosen, _ = QFileDialog.getOpenFileName(
+            self,
+            "Executável do ffmpeg",
+            self.ffmpeg_path.text().strip() or str(Path.home()),
+            "ffmpeg (ffmpeg.exe ffmpeg);;Todos (*)",
+        )
+        if chosen:
+            self.ffmpeg_path.setText(chosen)
+            self._report_ffmpeg()
+
+    def _report_ffmpeg(self) -> None:
+        """Mostra no log o ffmpeg que seria usado agora."""
+        configured = self.ffmpeg_path.text().strip()
+        found = find_ffmpeg(configured)
+        if found:
+            self._append_log("ok", f"ffmpeg encontrado: {found}")
+        else:
+            for line in describe_missing_ffmpeg(configured).splitlines():
+                self._append_log("warn", line)
+
     def _choose_cookies_file(self) -> None:
         chosen, _ = QFileDialog.getOpenFileName(
             self, "Arquivo de cookies", str(Path.home()), "Cookies (*.txt);;Todos (*)"
@@ -412,12 +445,7 @@ class MainWindow(QMainWindow):
         )
 
     def _check_ffmpeg(self) -> None:
-        if shutil.which("ffmpeg") is None:
-            self._append_log(
-                "warn",
-                "ffmpeg não encontrado no PATH: conversão de formato, metadados e capa "
-                "serão ignorados pelo yt-dlp. Instale o ffmpeg para o resultado completo.",
-            )
+        self._report_ffmpeg()
 
     def _open_store(self, cfg: AppConfig) -> QueueStore:
         db_path = cfg.db_path()
@@ -507,20 +535,14 @@ class MainWindow(QMainWindow):
         needs_ffmpeg = (
             cfg.audio_format != "best" or cfg.embed_metadata or cfg.embed_thumbnail
         )
-        if not needs_ffmpeg or shutil.which("ffmpeg") is not None:
+        if not needs_ffmpeg:
+            return True
+        found = find_ffmpeg(cfg.ffmpeg_path)
+        if found:
+            self._append_log("info", f"ffmpeg: {found}")
             return True
 
-        detail = (
-            "Sem o ffmpeg o áudio é salvo no formato original (normalmente .webm ou "
-            ".m4a), sem conversão para MP3, sem metadados e sem capa — muitos "
-            "aparelhos automotivos não tocam esses arquivos.\n"
-            + (
-                "Instale com: winget install Gyan.FFmpeg\n"
-                if os.name == "nt"
-                else "Instale com: sudo apt install ffmpeg\n"
-            )
-            + "Depois feche e abra o programa de novo."
-        )
+        detail = describe_missing_ffmpeg(cfg.ffmpeg_path)
         for line in detail.splitlines():
             self._append_log("warn", line)
         if self._ask_continue(
@@ -682,6 +704,7 @@ class MainWindow(QMainWindow):
             self.cookies_file,
             self.cookies_browser,
             self.audio_format,
+            self.ffmpeg_path,
             self.ascii_only,
             self.default_genre,
             self.default_album,

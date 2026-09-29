@@ -32,6 +32,8 @@ class AppConfig:
     jitter: float = 15.0
 
     audio_format: str = "mp3"
+    # Vazio = busca automática. Aceita o executável ou a pasta que o contém.
+    ffmpeg_path: str = ""
     embed_thumbnail: bool = True
     embed_metadata: bool = True
 
