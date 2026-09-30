@@ -7,6 +7,7 @@ automotivos e o mais restritivo dos sistemas de arquivo em uso.
 
 from __future__ import annotations
 
+import os.path
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -139,3 +140,24 @@ def build_relative_path(tags: TrackTags, ascii_only: bool = True, max_len: int =
         stem = f"{tags.track_number:02d} - {stem}"
         stem = stem[: max_len + 5].rstrip(". ")
     return "/".join(parts + [stem])
+
+
+def preview_path(
+    root: str,
+    ascii_only: bool = True,
+    extension: str = "ext",
+    max_len: int = 60,
+    path_module=os.path,
+) -> str:
+    """Caminho de exemplo para a interface, com o saneamento real aplicado.
+
+    `path_module` existe para os testes: permite montar o exemplo com as regras
+    do Windows (ntpath) rodando em qualquer sistema.
+    """
+    root = (root or "").strip().rstrip("/\\") or "<saída>"
+    parts = [sanitize_component(p, ascii_only, max_len) for p in ("Gênero", "Artista", "Álbum")]
+    stem = sanitize_component("01 - Título", ascii_only, max_len)
+    joined = path_module.sep.join([root, *parts, f"{stem}.{extension}"])
+    # normpath uniformiza o separador: no Windows o QFileDialog devolve o
+    # caminho com "/", e sem isto o exemplo sairia com os dois misturados.
+    return path_module.normpath(joined)

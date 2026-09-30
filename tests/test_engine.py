@@ -28,6 +28,7 @@ from pen_drive_maker.downloader import (  # noqa: E402
 )
 from pen_drive_maker.organizer import (  # noqa: E402
     build_relative_path,
+    preview_path,
     resolve_tags,
     sanitize_component,
 )
@@ -337,6 +338,66 @@ class CookieTest(unittest.TestCase):
         self.assertTrue(any("arquivo de cookies" in m for _, m in logs))
         self.assertFalse(any("Erro inesperado" in m for _, m in logs))
         self.assertTrue(reasons and "cookies" in reasons[0].lower())
+
+
+class PreviewPathTest(unittest.TestCase):
+    """O exemplo mostrado na interface tem de casar com o que é criado."""
+
+    def test_windows_never_mixes_separators(self):
+        import ntpath
+
+        for root in (
+            r"C:\Users\User\PenDrive",
+            "C:/Users/User/PenDrive",     # o QFileDialog do Qt devolve assim
+            "C:/Users/User/PenDrive/",    # com barra sobrando
+        ):
+            example = preview_path(root, path_module=ntpath)
+            self.assertNotIn("/", example, f"separador misturado em {example}")
+            esperado = ntpath.normpath("C:/Users/User/PenDrive") + ntpath.sep
+            self.assertTrue(example.startswith(esperado), example)
+
+    def test_posix_uses_forward_slashes(self):
+        import posixpath
+
+        example = preview_path("/media/usuario/PENDRIVE", path_module=posixpath)
+        self.assertEqual(
+            example, "/media/usuario/PENDRIVE/Genero/Artista/Album/01 - Titulo.ext"
+        )
+
+    def test_ascii_option_is_reflected(self):
+        import posixpath
+
+        com_acento = preview_path("/x", ascii_only=False, path_module=posixpath)
+        sem_acento = preview_path("/x", ascii_only=True, path_module=posixpath)
+        self.assertIn("Gênero", com_acento)
+        self.assertNotIn("Gênero", sem_acento)
+        self.assertIn("Genero", sem_acento)
+
+    def test_extension_follows_the_chosen_format(self):
+        import posixpath
+
+        self.assertTrue(
+            preview_path("/x", extension="mp3", path_module=posixpath).endswith(".mp3")
+        )
+
+    def test_empty_root_has_a_placeholder(self):
+        import posixpath
+
+        self.assertTrue(preview_path("  ", path_module=posixpath).startswith("<saída>"))
+
+    def test_preview_matches_build_relative_path(self):
+        """O exemplo e o caminho real usam o mesmo saneamento."""
+        import posixpath
+
+        tags = resolve_tags(
+            {"genre": "Gênero", "artist": "Artista", "album": "Álbum", "title": "Título",
+             "track_number": 1},
+            "X",
+            "Y",
+        )
+        real = build_relative_path(tags)
+        example = preview_path("/raiz", extension="mp3", path_module=posixpath)
+        self.assertTrue(example.endswith(f"{real}.mp3"), f"{example} != {real}")
 
 
 class EngineFlowTest(unittest.TestCase):

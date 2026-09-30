@@ -10,6 +10,7 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from pen_drive_maker.tools import (  # noqa: E402
+    ejs_package_version,
     app_dirs,
     bundled_dir,
     describe_missing_ffmpeg,
@@ -268,3 +269,37 @@ class EngineIntegrationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EjsSolverTest(unittest.TestCase):
+    """O pacote yt-dlp-ejs traz os scripts do solucionador localmente.
+
+    Sem ele o yt-dlp usa um stub que importa a biblioteca do npm em tempo de
+    execução, e o download falha com "The page needs to be reloaded".
+    """
+
+    def test_package_is_installed_and_usable(self):
+        version = ejs_package_version()
+        self.assertIsNotNone(version, "yt-dlp-ejs deveria ser uma dependência")
+
+    def test_version_matches_what_yt_dlp_expects(self):
+        from yt_dlp.extractor.youtube.jsc._builtin.vendor import _info
+
+        version = ejs_package_version()
+        self.assertEqual(
+            version.split(".")[:2],
+            _info.VERSION.split(".")[:2],
+            f"yt-dlp espera a série {_info.VERSION} do yt-dlp-ejs, temos {version}",
+        )
+
+    def test_solver_scripts_are_not_empty(self):
+        import yt_dlp_ejs.yt.solver
+
+        # O stub embutido no yt-dlp tem ~245 bytes; a biblioteca real, ~148 KB.
+        self.assertGreater(len(yt_dlp_ejs.yt.solver.lib()), 100_000)
+        self.assertGreater(len(yt_dlp_ejs.yt.solver.core()), 1_000)
+
+    def test_remote_components_are_off_by_default(self):
+        from pen_drive_maker.config import AppConfig
+
+        self.assertFalse(AppConfig().allow_remote_components)

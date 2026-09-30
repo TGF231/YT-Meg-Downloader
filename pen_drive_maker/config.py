@@ -34,6 +34,9 @@ class AppConfig:
     audio_format: str = "mp3"
     # Vazio = busca automática. Aceita o executável ou a pasta que o contém.
     ffmpeg_path: str = ""
+    # Deixa o yt-dlp baixar os scripts do solucionador quando o pacote local
+    # não servir. Desligado por padrão: baixa código de terceiros na hora.
+    allow_remote_components: bool = False
     embed_thumbnail: bool = True
     embed_metadata: bool = True
 

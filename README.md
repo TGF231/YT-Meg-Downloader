@@ -152,8 +152,21 @@ dela — se você acabou de instalar, feche e abra o programa.
 
 #### `The page needs to be reloaded` / `Signature solving failed`
 
-Falta um runtime JavaScript. Veja *Dois pré-requisitos do sistema* acima:
-instale o Deno, ou coloque o `deno.exe` ao lado do `PenDriveMaker.exe`.
+O YouTube exige resolver um desafio JavaScript, e isso precisa de **duas**
+coisas: um runtime e os scripts do solucionador.
+
+1. **Runtime** — Deno, Node, Bun ou QuickJS. Veja os pré-requisitos acima.
+2. **Scripts** — o pacote `yt-dlp-ejs`. O `yt-dlp` embute apenas um stub que
+   busca a biblioteca no npm durante o download, e esse download vem desligado
+   por padrão. Se a mensagem citar *Remote components ... were skipped*, é isso
+   que falta: `pip install yt-dlp-ejs`.
+
+O executável standalone já traz os dois. O log de abertura mostra qual runtime
+e qual versão do solucionador estão em uso.
+
+Se o pacote local ficar defasado em relação ao `yt-dlp`, marque **Permitir
+baixar componentes do yt-dlp quando faltarem** na interface: ele busca os
+scripts sozinho, do GitHub e do npm.
 
 #### `Could not copy Chrome cookie database`
 
@@ -253,7 +266,8 @@ Metadados e capa são embutidos quando o formato de destino suporta.
 | `packaging.spec` | Receita do PyInstaller para o executável standalone |
 | `.github/workflows/release.yml` | Testes, build e publicação da release na tag |
 
-Dependências Python: apenas `PySide6` e `yt-dlp`.
+Dependências Python: `PySide6`, `yt-dlp` e `yt-dlp-ejs` (os scripts que
+resolvem os desafios JavaScript do YouTube).
 
 ### Ferramentas de terceiros embutidas
 

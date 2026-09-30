@@ -35,12 +35,14 @@ from PySide6.QtWidgets import (
 from .config import AUDIO_FORMATS, BROWSERS, AppConfig
 from .downloader import DownloadEngine, EngineCallbacks, check_cookies
 from .tools import (
+    describe_missing_ejs,
     describe_missing_ffmpeg,
     describe_missing_js_runtime,
+    ejs_package_version,
     find_ffmpeg,
     find_js_runtime,
 )
-from .organizer import TrackTags, sanitize_component
+from .organizer import TrackTags, preview_path, sanitize_component
 from .store import QueueStats, QueueStore
 
 ORG_NAME = "PenDriveMaker"
@@ -237,6 +239,16 @@ class MainWindow(QMainWindow):
         form.addRow("", self.embed_metadata)
         form.addRow("", self.embed_thumbnail)
 
+        self.allow_remote_components = QCheckBox(
+            "Permitir baixar componentes do yt-dlp quando faltarem"
+        )
+        self.allow_remote_components.setToolTip(
+            "Autoriza o yt-dlp a buscar do GitHub e do npm os scripts que resolvem "
+            "os desafios do YouTube. Só é necessário se o pacote yt-dlp-ejs local "
+            "estiver ausente ou defasado."
+        )
+        form.addRow("", self.allow_remote_components)
+
         self.ascii_only = QCheckBox("Somente ASCII nos nomes (recomendado para FAT32)")
         form.addRow("", self.ascii_only)
 
@@ -297,6 +309,8 @@ class MainWindow(QMainWindow):
         self.structure_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(self.structure_label)
         self.output_edit.textChanged.connect(self._refresh_structure_label)
+        self.ascii_only.toggled.connect(self._refresh_structure_label)
+        self.audio_format.currentIndexChanged.connect(self._refresh_structure_label)
         return box
 
     def _build_tree_box(self) -> QGroupBox:
@@ -350,6 +364,7 @@ class MainWindow(QMainWindow):
         self.max_blocks.setValue(int(cfg.max_block_events))
         self._select_data(self.audio_format, cfg.audio_format)
         self.ffmpeg_path.setText(str(cfg.ffmpeg_path))
+        self.allow_remote_components.setChecked(_as_bool(cfg.allow_remote_components))
         self.embed_metadata.setChecked(_as_bool(cfg.embed_metadata))
         self.embed_thumbnail.setChecked(_as_bool(cfg.embed_thumbnail))
         self.ascii_only.setChecked(_as_bool(cfg.ascii_only))
@@ -380,6 +395,7 @@ class MainWindow(QMainWindow):
             jitter=self.jitter.value(),
             audio_format=self.audio_format.currentData(),
             ffmpeg_path=self.ffmpeg_path.text().strip(),
+            allow_remote_components=self.allow_remote_components.isChecked(),
             embed_thumbnail=self.embed_thumbnail.isChecked(),
             embed_metadata=self.embed_metadata.isChecked(),
             cookies_mode=self.cookies_mode.currentData(),
@@ -439,13 +455,27 @@ class MainWindow(QMainWindow):
         self.cookies_browser.setVisible(mode == "browser")
 
     def _refresh_structure_label(self) -> None:
-        root = self.output_edit.text().strip() or "<saída>"
-        self.structure_label.setText(
-            f"Estrutura de destino:  {root}/Gênero/Artista/Álbum/NN - Título.ext"
+        """Mostra um caminho de exemplo igual ao que será criado de verdade.
+
+        Passa pelo mesmo saneamento dos downloads: com "Somente ASCII" ligado o
+        exemplo aparece sem acentos, como os arquivos vão aparecer no pen drive.
+        """
+        audio_format = self.audio_format.currentData()
+        example = preview_path(
+            self.output_edit.text(),
+            ascii_only=self.ascii_only.isChecked(),
+            extension="ext" if audio_format == "best" else audio_format,
         )
+        self.structure_label.setText(f"Estrutura de destino:  {example}")
 
     def _check_ffmpeg(self) -> None:
         self._report_ffmpeg()
+        solver = ejs_package_version()
+        if solver:
+            self._append_log("info", f"Solucionador de desafios (yt-dlp-ejs): {solver}")
+        else:
+            for line in describe_missing_ejs().splitlines():
+                self._append_log("warn", line)
 
     def _open_store(self, cfg: AppConfig) -> QueueStore:
         db_path = cfg.db_path()
@@ -705,6 +735,7 @@ class MainWindow(QMainWindow):
             self.cookies_browser,
             self.audio_format,
             self.ffmpeg_path,
+            self.allow_remote_components,
             self.ascii_only,
             self.default_genre,
             self.default_album,

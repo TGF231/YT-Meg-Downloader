@@ -63,7 +63,7 @@ a = Analysis(
     datas=YT_DLP_DATAS + BUNDLED_DOCS,
     # O yt-dlp registra seus próprios hooks do PyInstaller; os extratores são
     # importados dinamicamente e precisam ser coletados inteiros.
-    hiddenimports=["yt_dlp"],
+    hiddenimports=["yt_dlp", "yt_dlp_ejs", "yt_dlp_ejs.yt.solver"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

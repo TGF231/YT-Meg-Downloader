@@ -30,8 +30,10 @@ from yt_dlp.utils import DownloadError, ExtractorError
 from .config import AppConfig
 from .organizer import TrackTags, build_relative_path, resolve_tags, sanitize_component
 from .tools import (  # reexportados: a interface e os testes importam daqui
+    describe_missing_ejs,
     describe_missing_ffmpeg,
     describe_missing_js_runtime,
+    ejs_package_version,
     find_ffmpeg,
     find_js_runtime,
 )
@@ -420,6 +422,8 @@ class DownloadEngine:
         # falhar exatamente nos casos que a nossa busca resolveu.
         if self._ffmpeg_path:
             opts["ffmpeg_location"] = self._ffmpeg_path
+        if self.cfg.allow_remote_components:
+            opts["remote_components"] = ["ejs:github", "ejs:npm"]
         opts.update(self._auth_opts())
         return opts
 
@@ -494,6 +498,18 @@ class DownloadEngine:
             self._log("warn", "Nenhum runtime JavaScript encontrado; seguindo assim mesmo.")
         else:
             self._log("info", f"Runtime JavaScript: {runtime}")
+        solver = ejs_package_version()
+        if solver:
+            self._log("info", f"Solucionador de desafios (yt-dlp-ejs): {solver}")
+        elif self.cfg.allow_remote_components:
+            self._log(
+                "warn",
+                "Pacote yt-dlp-ejs ausente; os scripts serão baixados durante o uso.",
+            )
+        else:
+            for line in describe_missing_ejs().splitlines():
+                self._log("warn", line)
+
         self._ffmpeg_path = find_ffmpeg(self.cfg.ffmpeg_path)
         if self._ffmpeg_path:
             self._log("info", f"ffmpeg: {self._ffmpeg_path}")

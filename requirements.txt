@@ -1,2 +1,5 @@
 PySide6>=6.5
 yt-dlp>=2024.1.1
+# Scripts do solucionador de desafios do YouTube. Sem ele o yt-dlp tenta
+# baixar a biblioteca do npm em tempo de execução e o download falha.
+yt-dlp-ejs>=0.8.0

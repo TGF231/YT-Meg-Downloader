@@ -3,6 +3,29 @@
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o
 versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
+## [1.1.1] - 2026-09-30
+
+### Corrigido
+
+- **Faltava o pacote `yt-dlp-ejs`, e todo download falhava.** O `yt-dlp` traz
+  embutido apenas um stub de 245 bytes que importa a biblioteca do solucionador
+  do npm em tempo de execução — download que vem desligado por padrão. O
+  resultado era `The page needs to be reloaded` em toda faixa, mesmo com o
+  Deno funcionando. O pacote virou dependência e é embutido no executável:
+  traz a biblioteca de 148 KB localmente, na versão 0.8.0 que o yt-dlp espera.
+- **O exemplo de estrutura de destino misturava separadores**, mostrando
+  `C:\Users\User\PenDrive/Gênero/Artista/...`. Agora o caminho é normalizado
+  para o separador do sistema, inclusive quando vem do seletor de pastas do Qt,
+  que devolve barras normais no Windows.
+- O mesmo exemplo mostrava acentos que a opção "Somente ASCII" remove, e uma
+  extensão fixa. Agora passa pelo saneamento real e usa o formato escolhido.
+
+### Adicionado
+
+- Opção "Permitir baixar componentes do yt-dlp quando faltarem", desligada por
+  padrão, para o caso de o pacote local ficar defasado em relação ao yt-dlp.
+- O log de abertura informa a versão do solucionador em uso.
+
 ## [1.1.0] - 2026-09-29
 
 A 1.0.4 não chegou a ser publicada: o job de testes falhou no CI porque a
@@ -128,6 +151,7 @@ Primeira versão.
 - Interface PySide6 com contadores, barras de progresso, log colorido, árvore
   da estrutura de pastas criada e controles de pausar, retomar e parar.
 
+[1.1.1]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.1.1
 [1.1.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.1.0
 [1.0.3]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.0.3
 [1.0.2]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.0.2

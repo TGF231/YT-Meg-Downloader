@@ -208,6 +208,37 @@ def find_js_runtime() -> Optional[str]:
     return None
 
 
+def ejs_package_version() -> Optional[str]:
+    """Versão do yt-dlp-ejs, que traz os scripts do solucionador localmente.
+
+    Sem esse pacote o yt-dlp cai no stub embutido, que importa a biblioteca do
+    npm em tempo de execução — e, como esse download vem desligado por padrão,
+    o resultado é "The page needs to be reloaded" em toda faixa.
+    """
+    try:
+        import yt_dlp_ejs  # noqa: PLC0415 - opcional, checado em tempo de execução
+        import yt_dlp_ejs.yt.solver  # garante que os scripts são legíveis
+
+        if not yt_dlp_ejs.yt.solver.lib():
+            return None
+    except (ImportError, OSError):
+        return None
+    return str(getattr(yt_dlp_ejs, "version", None) or "versão desconhecida")
+
+
+def describe_missing_ejs() -> str:
+    return "\n".join([
+        "Pacote yt-dlp-ejs não encontrado.",
+        "Ele traz os scripts que resolvem os desafios JavaScript do YouTube. Sem "
+        "ele o yt-dlp tenta buscar a biblioteca no npm durante o download, o que "
+        "vem desligado por padrão, e toda faixa falha com 'The page needs to be "
+        "reloaded'.",
+        "Instale com: pip install yt-dlp-ejs",
+        "Ou marque 'Permitir baixar componentes do yt-dlp' na interface, que "
+        "autoriza o yt-dlp a buscá-los sozinho.",
+    ])
+
+
 def describe_missing_js_runtime() -> str:
     lines = [
         "Nenhum runtime JavaScript encontrado (deno, bun, node ou qjs).",
