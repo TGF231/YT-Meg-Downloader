@@ -373,6 +373,18 @@ class PreviewPathTest(unittest.TestCase):
         self.assertNotIn("Gênero", sem_acento)
         self.assertIn("Genero", sem_acento)
 
+    def test_genre_placeholder_is_configurable(self):
+        import posixpath
+
+        example = preview_path("/x", genre="EDM", path_module=posixpath)
+        self.assertEqual(example, "/x/EDM/Artista/Album/01 - Titulo.ext")
+
+    def test_genre_placeholder_is_sanitized_like_the_rest(self):
+        import posixpath
+
+        example = preview_path("/x", genre="Eletrônica/Dance", path_module=posixpath)
+        self.assertIn("Eletronica Dance", example)
+
     def test_extension_follows_the_chosen_format(self):
         import posixpath
 
@@ -456,8 +468,43 @@ class EngineFlowTest(unittest.TestCase):
         self.assertEqual(FakeYDL.calls["playlist"], 1, "a playlist deve ser extraída uma só vez")
         self.assertEqual(FakeYDL.calls["probe"], 5, "uma extração de metadados por faixa")
         files = sorted(p.relative_to(self.tmp).as_posix() for p in pathlib.Path(self.tmp).rglob("*.m4a"))
+        # Por padrão a pasta de gênero é o nome da playlist: o YouTube Music
+        # quase nunca informa gênero, e quem monta a playlist já classificou.
+        self.assertIn("Playlist de Teste/Artista/Album/01 - Musica 1.m4a", files)
+        self.assertIn("Playlist de Teste/Artista/Album/02 - Musica 2.m4a", files)
+
+    def test_metadata_mode_prefers_the_track_genre(self):
+        self.cfg.genre_source = "metadata"
+        self._run()
+        files = sorted(p.relative_to(self.tmp).as_posix() for p in pathlib.Path(self.tmp).rglob("*.m4a"))
+        # A faixa 1 tem genre="Rock"; a 2 não tem e cai no nome da playlist.
         self.assertIn("Rock/Artista/Album/01 - Musica 1.m4a", files)
-        self.assertIn("Sem Genero/Artista/Album/02 - Musica 2.m4a", files)
+        self.assertIn("Playlist de Teste/Artista/Album/02 - Musica 2.m4a", files)
+
+    def test_fixed_mode_ignores_both(self):
+        self.cfg.genre_source = "fixed"
+        self.cfg.default_genre = "Minhas Musicas"
+        self._run()
+        files = sorted(p.relative_to(self.tmp).as_posix() for p in pathlib.Path(self.tmp).rglob("*.m4a"))
+        self.assertTrue(all(f.startswith("Minhas Musicas/") for f in files), files)
+
+    def test_playlist_genre_survives_a_resumed_run(self):
+        """Ao retomar não há extração: o nome tem de vir do banco."""
+        self._run()
+        FakeYDL.calls = {"playlist": 0, "probe": 0, "download": 0}
+        pathlib.Path(self.tmp, "Playlist de Teste").rename(
+            pathlib.Path(self.tmp, "movido")
+        )
+        self.store.requeue_failed()
+        for item in self.store.list_items():
+            self.store.register_failure(item.video_id, "forcando", max_retries=99)
+        self._run()
+        self.assertEqual(FakeYDL.calls["playlist"], 0, "não deveria reextrair")
+        files = sorted(p.relative_to(self.tmp).as_posix() for p in pathlib.Path(self.tmp).rglob("*.m4a"))
+        self.assertTrue(
+            any(f.startswith("Playlist de Teste/") for f in files),
+            f"gênero perdido ao retomar: {files}",
+        )
 
     def test_resume_does_not_repeat_or_reextract(self):
         self._run()

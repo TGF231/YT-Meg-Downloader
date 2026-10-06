@@ -316,6 +316,7 @@ class DownloadEngine:
         # a busca cobre os lugares usuais, não todos os possíveis.
         self.allow_missing_js_runtime = allow_missing_js_runtime
         self._ffmpeg_path: Optional[str] = None
+        self._playlist_genre: str = ""
 
         self._stop = threading.Event()
         self._resume = threading.Event()
@@ -624,7 +625,13 @@ class DownloadEngine:
         if not info:
             raise RuntimeError("Metadados vazios.")
 
-        tags = resolve_tags(info, self.cfg.default_genre, self.cfg.default_album)
+        tags = resolve_tags(
+            info,
+            self.cfg.default_genre,
+            self.cfg.default_album,
+            self.cfg.genre_source,
+            self._playlist_genre,
+        )
         outtmpl = self._outtmpl_for(tags)
         self._log(
             "info",
@@ -699,6 +706,7 @@ class DownloadEngine:
             self._verify_environment()
             self._verify_cookies()
             self._extract_playlist(force=force_reextract)
+            self._load_playlist_genre()
             self._process_queue()
             stats = self.store.stats()
             if stats.failed:
@@ -744,6 +752,19 @@ class DownloadEngine:
             self._emit_stats()
             self._status("Ocioso")
             self.cb.finished(reason)
+
+    def _load_playlist_genre(self) -> None:
+        """O nome da playlist vira a pasta de gênero; vem do banco, então vale
+        igual numa execução retomada, sem reextrair nada."""
+        row = self.store.get_playlist()
+        self._playlist_genre = (row["title"] if row else "") or ""
+        if self.cfg.genre_source == "fixed":
+            self._log("info", f"Gênero fixo: {self.cfg.default_genre}")
+        elif self._playlist_genre:
+            origem = "playlist" if self.cfg.genre_source == "playlist" else "reserva"
+            self._log("info", f'Gênero pelo nome da playlist ({origem}): "{self._playlist_genre}"')
+        else:
+            self._log("warn", f"Playlist sem nome; gênero cai em {self.cfg.default_genre}.")
 
     def _process_queue(self) -> None:
         while True:

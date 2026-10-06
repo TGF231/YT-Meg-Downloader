@@ -225,9 +225,19 @@ ferramenta **encerra de forma limpa** e explica no log como retomar.
 
 `<saída>/<Gênero>/<Artista>/<Álbum>/<NN - Título>.<ext>`
 
-- **Gênero** vem dos metadados quando existem; o YouTube Music raramente os
-  expõe, então faixas sem gênero caem na pasta configurada (padrão
-  `Sem Genero`).
+- **Gênero** usa o **nome da playlist** por padrão. O YouTube Music quase nunca
+  preenche o campo de gênero, e quem monta uma playlist chamada "EDM" já
+  classificou as faixas. O seletor **Pasta de gênero** oferece três
+  comportamentos:
+
+  | Opção | O que vira a pasta |
+  |---|---|
+  | Nome da playlist (padrão) | O nome da playlist; metadados só se ela não tiver nome |
+  | Metadados da faixa | O gênero declarado na faixa; o nome da playlist como reserva |
+  | Sempre o texto abaixo | O **Gênero de reserva**, igual para tudo |
+
+  Use *Metadados da faixa* quando a playlist misturar estilos e as faixas
+  tiverem gênero marcado; use *texto fixo* para juntar tudo numa pasta só.
 - **Artista** usa `album_artist` → `artists` → `artist` → canal, nessa ordem.
   O sufixo `- Topic` é removido e participações (`feat.`, `ft.`, `with`) vão
   para a pasta do artista principal. Nomes com `&` e vírgula são preservados

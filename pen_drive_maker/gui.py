@@ -252,8 +252,19 @@ class MainWindow(QMainWindow):
         self.ascii_only = QCheckBox("Somente ASCII nos nomes (recomendado para FAT32)")
         form.addRow("", self.ascii_only)
 
+        self.genre_source = QComboBox()
+        self.genre_source.addItem("Nome da playlist (recomendado)", "playlist")
+        self.genre_source.addItem("Metadados da faixa, senão a playlist", "metadata")
+        self.genre_source.addItem("Sempre o texto abaixo", "fixed")
+        self.genre_source.setToolTip(
+            "O YouTube Music quase nunca informa o gênero. Usar o nome da playlist "
+            "aproveita a classificação que você mesmo fez ao montá-la."
+        )
+        form.addRow("Pasta de gênero:", self.genre_source)
+
         self.default_genre = QLineEdit()
-        form.addRow("Pasta para gênero ausente:", self.default_genre)
+        self.default_genre.setToolTip("Usado quando nada mais estiver disponível.")
+        form.addRow("Gênero de reserva:", self.default_genre)
 
         self.default_album = QLineEdit()
         form.addRow("Pasta para álbum ausente:", self.default_album)
@@ -311,6 +322,8 @@ class MainWindow(QMainWindow):
         self.output_edit.textChanged.connect(self._refresh_structure_label)
         self.ascii_only.toggled.connect(self._refresh_structure_label)
         self.audio_format.currentIndexChanged.connect(self._refresh_structure_label)
+        self.genre_source.currentIndexChanged.connect(self._refresh_structure_label)
+        self.default_genre.textChanged.connect(self._refresh_structure_label)
         return box
 
     def _build_tree_box(self) -> QGroupBox:
@@ -368,6 +381,7 @@ class MainWindow(QMainWindow):
         self.embed_metadata.setChecked(_as_bool(cfg.embed_metadata))
         self.embed_thumbnail.setChecked(_as_bool(cfg.embed_thumbnail))
         self.ascii_only.setChecked(_as_bool(cfg.ascii_only))
+        self._select_data(self.genre_source, cfg.genre_source)
         self.default_genre.setText(str(cfg.default_genre))
         self.default_album.setText(str(cfg.default_album))
         self._select_data(self.cookies_mode, cfg.cookies_mode)
@@ -401,6 +415,7 @@ class MainWindow(QMainWindow):
             cookies_mode=self.cookies_mode.currentData(),
             cookies_file=self.cookies_file.text().strip(),
             cookies_browser=self.cookies_browser.currentText(),
+            genre_source=self.genre_source.currentData(),
             default_genre=self.default_genre.text().strip() or "Sem Genero",
             default_album=self.default_album.text().strip() or "Singles",
             ascii_only=self.ascii_only.isChecked(),
@@ -465,8 +480,20 @@ class MainWindow(QMainWindow):
             self.output_edit.text(),
             ascii_only=self.ascii_only.isChecked(),
             extension="ext" if audio_format == "best" else audio_format,
+            genre=self._preview_genre(),
         )
         self.structure_label.setText(f"Estrutura de destino:  {example}")
+
+    def _preview_genre(self) -> str:
+        """Nome que a pasta de gênero terá, conforme a fonte escolhida."""
+        source = self.genre_source.currentData()
+        if source == "fixed":
+            return self.default_genre.text().strip() or "Sem Genero"
+        if source == "playlist":
+            row = self.store.get_playlist() if self.store is not None else None
+            titulo = (row["title"] if row else "") or ""
+            return titulo or "Nome da playlist"
+        return "Gênero"
 
     def _check_ffmpeg(self) -> None:
         self._report_ffmpeg()
@@ -737,6 +764,7 @@ class MainWindow(QMainWindow):
             self.ffmpeg_path,
             self.allow_remote_components,
             self.ascii_only,
+            self.genre_source,
             self.default_genre,
             self.default_album,
         ):

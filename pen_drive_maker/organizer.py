@@ -35,6 +35,13 @@ _FEATURING = re.compile(
 )
 
 
+# De onde sai o nome da pasta de gênero.
+GENRE_FROM_PLAYLIST = "playlist"   # nome da playlist (padrão)
+GENRE_FROM_METADATA = "metadata"   # metadados da faixa, com a playlist de reserva
+GENRE_FIXED = "fixed"              # sempre o texto configurado
+GENRE_SOURCES = (GENRE_FROM_PLAYLIST, GENRE_FROM_METADATA, GENRE_FIXED)
+
+
 @dataclass
 class TrackTags:
     genre: str
@@ -89,21 +96,39 @@ def _clean_artist(raw: str) -> str:
     return primary or raw
 
 
-def resolve_tags(info: Dict[str, Any], default_genre: str, default_album: str) -> TrackTags:
+def metadata_genre(info: Dict[str, Any]) -> str:
+    """Gênero declarado nos metadados, se houver. Quase sempre vazio no YT Music."""
+    genre = _first(info, "genre", "genres")
+    if genre:
+        return genre
+    categories = info.get("categories") or []
+    # "Music" é a categoria de praticamente todo vídeo do YT Music: inútil.
+    return next(
+        (c for c in categories if isinstance(c, str) and c.strip().lower() != "music"),
+        "",
+    )
+
+
+def resolve_tags(
+    info: Dict[str, Any],
+    default_genre: str,
+    default_album: str,
+    genre_source: str = GENRE_FROM_PLAYLIST,
+    playlist_genre: str = "",
+) -> TrackTags:
     """Extrai gênero/artista/álbum do dicionário de informações do yt-dlp.
 
-    O YouTube Music raramente expõe gênero; quando falta, cai no valor padrão
-    configurado para que a estrutura de pastas continue previsível.
+    O YouTube Music quase nunca preenche o gênero, então por padrão a pasta usa
+    o nome da playlist: quem monta uma playlist chamada "EDM" já classificou as
+    faixas, e é essa classificação que serve ao pen drive.
     """
-    genre = _first(info, "genre", "genres")
-    if not genre:
-        categories = info.get("categories") or []
-        # "Music" é a categoria de praticamente todo vídeo do YT Music: inútil.
-        genre = next(
-            (c for c in categories if isinstance(c, str) and c.strip().lower() != "music"),
-            "",
-        )
-    genre = genre or default_genre
+    playlist_genre = (playlist_genre or "").strip()
+    if genre_source == GENRE_FIXED:
+        genre = default_genre
+    elif genre_source == GENRE_FROM_METADATA:
+        genre = metadata_genre(info) or playlist_genre or default_genre
+    else:  # GENRE_FROM_PLAYLIST
+        genre = playlist_genre or metadata_genre(info) or default_genre
 
     artist = ""
     # "artists" (lista) vem antes de "artist" (string com vírgulas) porque o
@@ -146,6 +171,7 @@ def preview_path(
     root: str,
     ascii_only: bool = True,
     extension: str = "ext",
+    genre: str = "Gênero",
     max_len: int = 60,
     path_module=os.path,
 ) -> str:
@@ -155,7 +181,9 @@ def preview_path(
     do Windows (ntpath) rodando em qualquer sistema.
     """
     root = (root or "").strip().rstrip("/\\") or "<saída>"
-    parts = [sanitize_component(p, ascii_only, max_len) for p in ("Gênero", "Artista", "Álbum")]
+    parts = [
+        sanitize_component(p, ascii_only, max_len) for p in (genre, "Artista", "Álbum")
+    ]
     stem = sanitize_component("01 - Título", ascii_only, max_len)
     joined = path_module.sep.join([root, *parts, f"{stem}.{extension}"])
     # normpath uniformiza o separador: no Windows o QFileDialog devolve o

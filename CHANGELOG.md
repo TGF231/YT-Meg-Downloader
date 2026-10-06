@@ -3,6 +3,25 @@
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o
 versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
+## [1.2.0] - 2026-10-06
+
+### Alterado
+
+- **A pasta de gênero passa a usar o nome da playlist.** O YouTube Music quase
+  nunca preenche o campo de gênero, então tudo caía em `Sem Genero`. O nome da
+  playlist já estava guardado no banco desde a extração, mas nunca era
+  consultado: quem monta uma playlist chamada "EDM" já classificou as faixas, e
+  é essa classificação que serve ao pen drive.
+
+### Adicionado
+
+- Seletor "Pasta de gênero" com três opções: o nome da playlist (padrão), os
+  metadados da faixa com a playlist de reserva, ou um texto fixo. O campo
+  antigo "Pasta para gênero ausente" virou "Gênero de reserva".
+- O nome vem do banco, então vale igual numa execução retomada, sem reextrair.
+- O exemplo de estrutura de destino mostra o nome que a pasta terá de verdade,
+  conforme a fonte escolhida, em vez da palavra "Gênero" sempre.
+
 ## [1.1.1] - 2026-09-30
 
 ### Corrigido
@@ -151,6 +170,7 @@ Primeira versão.
 - Interface PySide6 com contadores, barras de progresso, log colorido, árvore
   da estrutura de pastas criada e controles de pausar, retomar e parar.
 
+[1.2.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.2.0
 [1.1.1]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.1.1
 [1.1.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.1.0
 [1.0.3]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.0.3

@@ -46,6 +46,8 @@ class AppConfig:
     cookies_browser: str = "chrome"
 
     # Organização em pastas
+    # "playlist" | "metadata" | "fixed" — veja organizer.GENRE_SOURCES
+    genre_source: str = "playlist"
     default_genre: str = "Sem Genero"
     default_album: str = "Singles"
     ascii_only: bool = True          # nomes ASCII puros, mais seguros em FAT32/head units
@@ -92,6 +94,8 @@ class AppConfig:
             self.audio_format = "mp3"
         if self.cookies_mode not in ("none", "file", "browser"):
             self.cookies_mode = "none"
+        if self.genre_source not in ("playlist", "metadata", "fixed"):
+            self.genre_source = "playlist"
 
     def validate(self) -> list[str]:
         """Retorna a lista de problemas que impedem o início do download."""
