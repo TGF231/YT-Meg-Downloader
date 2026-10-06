@@ -3,6 +3,30 @@
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o
 versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
+## [1.3.0] - 2026-10-06
+
+### Adicionado
+
+- **Consulta de gênero numa base externa.** O YouTube Music não informa
+  gênero; a busca pública do iTunes informa, sem exigir chave. Passa a ser a
+  fonte padrão, com o nome da playlist e os metadados como reserva.
+- As respostas ficam em cache no mesmo banco da fila, inclusive as ausências,
+  para não reconsultar a cada retomada. Falha de rede **não** é gravada: um
+  erro temporário não pode deixar a faixa sem gênero para sempre.
+- Subgêneros são agrupados por padrão: numa playlist de EDM, *Dance*, *House*
+  e *Electronic* viram uma pasta só, em vez de três. Desligável nas opções.
+- Interface com a assinatura visual da família: acento #7D0E0E, temas claro e
+  escuro alternáveis, barra de ações e densidade automática.
+
+### Alterado
+
+- **Interface simplificada.** A tela principal ficou com o que muda a cada
+  uso: playlist, destino, cookies, gênero, formato e intervalo. Ritmo,
+  retentativas, metadados, ffmpeg e afins foram para *Ferramentas → Opções
+  avançadas*.
+- As ações viraram barra de ferramentas, vindas de uma tabela única, com um
+  teste que falha se alguma linha apontar para um método inexistente.
+
 ## [1.2.0] - 2026-10-06
 
 ### Alterado
@@ -170,6 +194,7 @@ Primeira versão.
 - Interface PySide6 com contadores, barras de progresso, log colorido, árvore
   da estrutura de pastas criada e controles de pausar, retomar e parar.
 
+[1.3.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.3.0
 [1.2.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.2.0
 [1.1.1]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.1.1
 [1.1.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.1.0

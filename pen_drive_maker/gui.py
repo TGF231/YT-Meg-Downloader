@@ -1,4 +1,4 @@
-"""Interface gráfica em PySide6."""
+"""Interface gráfica em PySide6, sobre a assinatura visual da família."""
 
 from __future__ import annotations
 
@@ -6,12 +6,12 @@ import sys
 from pathlib import Path
 from typing import Dict, Optional
 
-from PySide6.QtCore import QObject, QSettings, QThread, Qt, Signal, Slot
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import (
-    QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QMainWindow,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -32,8 +31,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from . import __version__
+from .assinatura import tema
+from .assinatura.acoes import BARRA, OCULTA, Acao
+from .assinatura.comum import ajustes, como_bool, definir_papel
+from .assinatura.janela import JanelaBase
 from .config import AUDIO_FORMATS, BROWSERS, AppConfig
 from .downloader import DownloadEngine, EngineCallbacks, check_cookies
+from .organizer import TrackTags, preview_path, sanitize_component
+from .store import QueueStats, QueueStore
 from .tools import (
     describe_missing_ejs,
     describe_missing_ffmpeg,
@@ -42,18 +48,16 @@ from .tools import (
     find_ffmpeg,
     find_js_runtime,
 )
-from .organizer import TrackTags, preview_path, sanitize_component
-from .store import QueueStats, QueueStore
 
-ORG_NAME = "PenDriveMaker"
-APP_NAME = "YouTube Music Pen Drive Maker"
+APP_NOME = "Pen Drive Maker"
 
-LOG_COLORS = {
-    "debug": "#8a8a8a",
-    "info": "#d6d6d6",
-    "ok": "#6fcf6f",
-    "warn": "#e0b341",
-    "error": "#ef6262",
+# Papéis de log, resolvidos em cores do tema a cada repintura.
+NIVEIS_LOG = {
+    "debug": "ink_2",
+    "info": "ink",
+    "ok": "ok",
+    "warn": "warn",
+    "error": "bad",
 }
 
 
@@ -88,744 +92,710 @@ class EngineThread(QThread):
         self._engine.run(force_reextract=self._force)
 
 
-class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle(APP_NAME)
-        self.resize(1080, 780)
+class OpcoesAvancadas(QDialog):
+    """O que raramente muda sai da tela principal e vem parar aqui."""
 
-        self.settings = QSettings(ORG_NAME, APP_NAME)
+    def __init__(self, cfg: AppConfig, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Opções avançadas")
+        self.setMinimumWidth(520)
+        layout = QVBoxLayout(self)
+
+        ritmo = QGroupBox("Proteção contra bloqueio")
+        form = QFormLayout(ritmo)
+        self.jitter = QDoubleSpinBox()
+        self.jitter.setRange(0.0, 3600.0)
+        self.jitter.setSuffix(" s")
+        self.jitter.setValue(cfg.jitter)
+        form.addRow("Jitter aleatório:", self.jitter)
+        self.max_retries = QSpinBox()
+        self.max_retries.setRange(1, 20)
+        self.max_retries.setValue(cfg.max_retries)
+        form.addRow("Tentativas por faixa:", self.max_retries)
+        self.max_consecutive = QSpinBox()
+        self.max_consecutive.setRange(1, 50)
+        self.max_consecutive.setValue(cfg.max_consecutive_failures)
+        form.addRow("Falhas seguidas = bloqueio:", self.max_consecutive)
+        self.block_backoff = QDoubleSpinBox()
+        self.block_backoff.setRange(5.0, 7200.0)
+        self.block_backoff.setDecimals(0)
+        self.block_backoff.setSuffix(" s")
+        self.block_backoff.setValue(cfg.block_base_backoff)
+        form.addRow("Backoff inicial:", self.block_backoff)
+        self.max_blocks = QSpinBox()
+        self.max_blocks.setRange(1, 50)
+        self.max_blocks.setValue(cfg.max_block_events)
+        form.addRow("Bloqueios até encerrar:", self.max_blocks)
+        layout.addWidget(ritmo)
+
+        arquivos = QGroupBox("Arquivos e metadados")
+        form = QFormLayout(arquivos)
+        self.embed_metadata = QCheckBox("Gravar metadados na tag")
+        self.embed_metadata.setChecked(cfg.embed_metadata)
+        form.addRow("", self.embed_metadata)
+        self.embed_thumbnail = QCheckBox("Embutir capa do álbum")
+        self.embed_thumbnail.setChecked(cfg.embed_thumbnail)
+        form.addRow("", self.embed_thumbnail)
+        self.ascii_only = QCheckBox("Somente ASCII nos nomes (FAT32)")
+        self.ascii_only.setChecked(cfg.ascii_only)
+        form.addRow("", self.ascii_only)
+        self.group_subgenres = QCheckBox("Agrupar subgêneros (Dance/House → Eletronica)")
+        self.group_subgenres.setChecked(cfg.group_subgenres)
+        form.addRow("", self.group_subgenres)
+        self.default_genre = QLineEdit(cfg.default_genre)
+        form.addRow("Gênero de reserva:", self.default_genre)
+        self.default_album = QLineEdit(cfg.default_album)
+        form.addRow("Álbum ausente:", self.default_album)
+        layout.addWidget(arquivos)
+
+        ferramentas = QGroupBox("Ferramentas externas")
+        form = QFormLayout(ferramentas)
+        linha = QHBoxLayout()
+        self.ffmpeg_path = QLineEdit(cfg.ffmpeg_path)
+        self.ffmpeg_path.setPlaceholderText("vazio = detectar automaticamente")
+        procurar = QPushButton("Procurar...")
+        procurar.clicked.connect(self._escolher_ffmpeg)
+        linha.addWidget(self.ffmpeg_path, 1)
+        linha.addWidget(procurar)
+        form.addRow("ffmpeg:", linha)
+        self.allow_remote_components = QCheckBox(
+            "Permitir baixar componentes do yt-dlp quando faltarem"
+        )
+        self.allow_remote_components.setChecked(cfg.allow_remote_components)
+        form.addRow("", self.allow_remote_components)
+        layout.addWidget(ferramentas)
+
+        botoes = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        botoes.accepted.connect(self.accept)
+        botoes.rejected.connect(self.reject)
+        layout.addWidget(botoes)
+
+    def _escolher_ffmpeg(self) -> None:
+        escolhido, _ = QFileDialog.getOpenFileName(
+            self, "Executável do ffmpeg", self.ffmpeg_path.text().strip() or str(Path.home())
+        )
+        if escolhido:
+            self.ffmpeg_path.setText(escolhido)
+
+    def aplicar(self, cfg: AppConfig) -> AppConfig:
+        cfg.jitter = self.jitter.value()
+        cfg.max_retries = self.max_retries.value()
+        cfg.max_consecutive_failures = self.max_consecutive.value()
+        cfg.block_base_backoff = self.block_backoff.value()
+        cfg.max_block_events = self.max_blocks.value()
+        cfg.embed_metadata = self.embed_metadata.isChecked()
+        cfg.embed_thumbnail = self.embed_thumbnail.isChecked()
+        cfg.ascii_only = self.ascii_only.isChecked()
+        cfg.group_subgenres = self.group_subgenres.isChecked()
+        cfg.default_genre = self.default_genre.text().strip() or "Sem Genero"
+        cfg.default_album = self.default_album.text().strip() or "Singles"
+        cfg.ffmpeg_path = self.ffmpeg_path.text().strip()
+        cfg.allow_remote_components = self.allow_remote_components.isChecked()
+        return cfg
+
+
+class MainWindow(JanelaBase):
+    APP_NOME = APP_NOME
+    APP_VERSAO = __version__
+    ROTULO_MENUS = "Ferramentas"
+    MENUS = (("ferramentas", "Ferramentas"),)
+    ACOES = (
+        Acao("act_iniciar", "Iniciar / Retomar", "iniciar", quando="parado", onde=BARRA),
+        Acao("act_pausar", "Pausar", "alternar_pausa", quando="rodando", onde=BARRA),
+        Acao("act_parar", "Parar", "parar", quando="rodando", onde=BARRA),
+        Acao("act_requeue", "Reenfileirar falhas", "reenfileirar", quando="parado",
+             onde=BARRA, separador=True),
+        Acao("act_reextrair", "Reextrair playlist", "reextrair", quando="parado", onde=BARRA),
+        Acao("act_opcoes", "Opções avançadas…", "abrir_opcoes", quando="parado",
+             onde="ferramentas"),
+        Acao("act_testar", "Testar ferramentas externas", "testar_ferramentas",
+             onde="ferramentas"),
+        Acao("act_limpar_generos", "Limpar cache de gêneros", "limpar_cache_generos",
+             quando="parado", onde="ferramentas"),
+        Acao("act_limpar_log", "Limpar log", "limpar_log", onde=OCULTA),
+    )
+
+    def __init__(self):
+        self.cfg = AppConfig()
         self.store: Optional[QueueStore] = None
         self.engine: Optional[DownloadEngine] = None
         self.thread: Optional[EngineThread] = None
         self.bridge = EngineBridge()
         self._tree_nodes: Dict[tuple, QTreeWidgetItem] = {}
+        self._rodando = False
+        super().__init__()
+        self._conectar_bridge()
+        self._carregar_preferencias()
+        self.carregar_tema_salvo()
+        self.testar_ferramentas()
 
-        self._build_ui()
-        self._connect_bridge()
-        self._load_settings()
-        self._update_controls(running=False)
-        self._check_ffmpeg()
+    # ----------------------------------------------------------- conteúdo
 
-    # ------------------------------------------------------------------ UI
+    def montar_conteudo(self) -> None:
+        pagina = QWidget()
+        fora = QVBoxLayout(pagina)
+        fora.addWidget(self._caixa_playlist())
+        fora.addWidget(self._caixa_organizacao())
+        fora.addWidget(self._caixa_progresso())
 
-    def _build_ui(self) -> None:
-        central = QWidget()
-        outer = QVBoxLayout(central)
+        divisor = QSplitter(Qt.Orientation.Vertical)
+        divisor.addWidget(self._caixa_arvore())
+        divisor.addWidget(self._caixa_log())
+        divisor.setSizes([260, 260])
+        fora.addWidget(divisor, 1)
+        self.adicionar_pagina(pagina)
 
-        outer.addWidget(self._build_source_box())
-
-        options_row = QHBoxLayout()
-        options_row.addWidget(self._build_pace_box(), 1)
-        options_row.addWidget(self._build_audio_box(), 1)
-        outer.addLayout(options_row)
-
-        outer.addLayout(self._build_button_row())
-        outer.addWidget(self._build_progress_box())
-
-        splitter = QSplitter(Qt.Vertical)
-        splitter.addWidget(self._build_tree_box())
-        splitter.addWidget(self._build_log_box())
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([280, 280])
-        outer.addWidget(splitter, 1)
-
-        self.setCentralWidget(central)
-        self.statusBar().showMessage("Ocioso")
-
-    def _build_source_box(self) -> QGroupBox:
-        box = QGroupBox("Playlist e destino")
-        form = QFormLayout(box)
+    def _caixa_playlist(self) -> QGroupBox:
+        caixa = QGroupBox("Playlist e destino")
+        form = QFormLayout(caixa)
 
         self.url_edit = QLineEdit()
-        self.url_edit.setPlaceholderText(
-            "https://music.youtube.com/playlist?list=..."
-        )
+        self.url_edit.setPlaceholderText("https://music.youtube.com/playlist?list=...")
         form.addRow("URL da playlist:", self.url_edit)
 
-        out_row = QHBoxLayout()
+        linha = QHBoxLayout()
         self.output_edit = QLineEdit()
-        browse = QPushButton("Escolher...")
-        browse.clicked.connect(self._choose_output_dir)
-        out_row.addWidget(self.output_edit, 1)
-        out_row.addWidget(browse)
-        form.addRow("Diretório de saída:", out_row)
+        procurar = QPushButton("Escolher...")
+        procurar.clicked.connect(self._escolher_saida)
+        linha.addWidget(self.output_edit, 1)
+        linha.addWidget(procurar)
+        form.addRow("Diretório de saída:", linha)
 
-        cookies_row = QHBoxLayout()
+        linha = QHBoxLayout()
         self.cookies_mode = QComboBox()
-        self.cookies_mode.addItem("Nenhum", "none")
+        self.cookies_mode.addItem("Sem cookies", "none")
         self.cookies_mode.addItem("Arquivo cookies.txt", "file")
         self.cookies_mode.addItem("Direto do navegador", "browser")
-        self.cookies_mode.currentIndexChanged.connect(self._update_cookie_widgets)
+        self.cookies_mode.currentIndexChanged.connect(self._atualizar_cookies)
         self.cookies_file = QLineEdit()
-        self.cookies_file.setPlaceholderText("caminho do cookies.txt (formato Netscape)")
+        self.cookies_file.setPlaceholderText("caminho do cookies.txt")
         self.cookies_browse = QPushButton("Procurar...")
-        self.cookies_browse.clicked.connect(self._choose_cookies_file)
+        self.cookies_browse.clicked.connect(self._escolher_cookies)
         self.cookies_browser = QComboBox()
         self.cookies_browser.addItems(BROWSERS)
-        cookies_row.addWidget(self.cookies_mode)
-        cookies_row.addWidget(self.cookies_file, 1)
-        cookies_row.addWidget(self.cookies_browse)
-        cookies_row.addWidget(self.cookies_browser)
-        form.addRow("Cookies:", cookies_row)
+        for w in (self.cookies_mode, self.cookies_file, self.cookies_browse, self.cookies_browser):
+            linha.addWidget(w, 1 if w is self.cookies_file else 0)
+        form.addRow("Cookies:", linha)
+        return caixa
 
-        hint = QLabel(
-            "Cookies de uma conta logada reduzem muito a chance de bloqueio em "
-            "playlists longas."
+    def _caixa_organizacao(self) -> QGroupBox:
+        caixa = QGroupBox("Organização e ritmo")
+        linha = QHBoxLayout(caixa)
+
+        esquerda = QFormLayout()
+        self.genre_source = QComboBox()
+        self.genre_source.addItem("Consultar na internet", "online")
+        self.genre_source.addItem("Nome da playlist", "playlist")
+        self.genre_source.addItem("Metadados da faixa", "metadata")
+        self.genre_source.addItem("Sempre o gênero de reserva", "fixed")
+        self.genre_source.setToolTip(
+            "O YouTube Music não informa o gênero. Consultar na internet busca "
+            "numa base pública; o nome da playlist usa a sua própria classificação."
         )
-        hint.setStyleSheet("color: #8a8a8a;")
-        form.addRow("", hint)
-        return box
-
-    def _build_pace_box(self) -> QGroupBox:
-        box = QGroupBox("Ritmo e proteção contra bloqueio")
-        form = QFormLayout(box)
-
-        self.min_interval = QDoubleSpinBox()
-        self.min_interval.setRange(0.0, 3600.0)
-        self.min_interval.setDecimals(1)
-        self.min_interval.setSuffix(" s")
-        form.addRow("Intervalo mínimo entre downloads:", self.min_interval)
-
-        self.jitter = QDoubleSpinBox()
-        self.jitter.setRange(0.0, 3600.0)
-        self.jitter.setDecimals(1)
-        self.jitter.setSuffix(" s")
-        form.addRow("Jitter aleatório (somado):", self.jitter)
-
-        self.max_retries = QSpinBox()
-        self.max_retries.setRange(1, 20)
-        form.addRow("Tentativas por faixa:", self.max_retries)
-
-        self.max_consecutive = QSpinBox()
-        self.max_consecutive.setRange(1, 50)
-        form.addRow("Falhas seguidas = bloqueio:", self.max_consecutive)
-
-        self.block_backoff = QDoubleSpinBox()
-        self.block_backoff.setRange(5.0, 7200.0)
-        self.block_backoff.setDecimals(0)
-        self.block_backoff.setSuffix(" s")
-        form.addRow("Backoff inicial no bloqueio:", self.block_backoff)
-
-        self.max_blocks = QSpinBox()
-        self.max_blocks.setRange(1, 50)
-        form.addRow("Bloqueios até encerrar:", self.max_blocks)
-        return box
-
-    def _build_audio_box(self) -> QGroupBox:
-        box = QGroupBox("Áudio e organização de pastas")
-        form = QFormLayout(box)
+        self.genre_source.currentIndexChanged.connect(self._atualizar_estrutura)
+        esquerda.addRow("Pasta de gênero:", self.genre_source)
 
         self.audio_format = QComboBox()
-        for key, label in AUDIO_FORMATS.items():
-            self.audio_format.addItem(label, key)
-        form.addRow("Formato de saída:", self.audio_format)
+        for chave, rotulo in AUDIO_FORMATS.items():
+            self.audio_format.addItem(rotulo, chave)
+        self.audio_format.currentIndexChanged.connect(self._atualizar_estrutura)
+        esquerda.addRow("Formato de saída:", self.audio_format)
+        linha.addLayout(esquerda, 1)
 
-        ffmpeg_row = QHBoxLayout()
-        self.ffmpeg_path = QLineEdit()
-        self.ffmpeg_path.setPlaceholderText("vazio = detectar automaticamente")
-        ffmpeg_browse = QPushButton("Procurar...")
-        ffmpeg_browse.clicked.connect(self._choose_ffmpeg)
-        ffmpeg_check = QPushButton("Testar")
-        ffmpeg_check.clicked.connect(self._report_ffmpeg)
-        ffmpeg_row.addWidget(self.ffmpeg_path, 1)
-        ffmpeg_row.addWidget(ffmpeg_browse)
-        ffmpeg_row.addWidget(ffmpeg_check)
-        form.addRow("ffmpeg:", ffmpeg_row)
-
-        self.embed_metadata = QCheckBox("Gravar metadados na tag do arquivo")
-        self.embed_thumbnail = QCheckBox("Embutir capa do álbum")
-        form.addRow("", self.embed_metadata)
-        form.addRow("", self.embed_thumbnail)
-
-        self.allow_remote_components = QCheckBox(
-            "Permitir baixar componentes do yt-dlp quando faltarem"
+        direita = QFormLayout()
+        self.min_interval = QDoubleSpinBox()
+        self.min_interval.setRange(0.0, 3600.0)
+        self.min_interval.setDecimals(0)
+        self.min_interval.setSuffix(" s")
+        self.min_interval.setMaximumWidth(160)
+        self.min_interval.setToolTip(
+            "Espera mínima entre downloads. Valores baixos aumentam o risco de bloqueio."
         )
-        self.allow_remote_components.setToolTip(
-            "Autoriza o yt-dlp a buscar do GitHub e do npm os scripts que resolvem "
-            "os desafios do YouTube. Só é necessário se o pacote yt-dlp-ejs local "
-            "estiver ausente ou defasado."
-        )
-        form.addRow("", self.allow_remote_components)
+        direita.addRow("Intervalo entre downloads:", self.min_interval)
+        self.estrutura = QLabel()
+        definir_papel(self.estrutura, "mono")
+        self.estrutura.setWordWrap(True)
+        direita.addRow("Destino:", self.estrutura)
+        linha.addLayout(direita, 1)
+        return caixa
 
-        self.ascii_only = QCheckBox("Somente ASCII nos nomes (recomendado para FAT32)")
-        form.addRow("", self.ascii_only)
+    def _caixa_progresso(self) -> QGroupBox:
+        caixa = QGroupBox("Progresso")
+        layout = QVBoxLayout(caixa)
+        self.contadores = QLabel("Total: 0 | Baixadas: 0 | Falhas: 0 | Na fila: 0")
+        definir_papel(self.contadores, "secao")
+        layout.addWidget(self.contadores)
+        self.barra_playlist = QProgressBar()
+        self.barra_playlist.setFormat("Playlist: %p%")
+        layout.addWidget(self.barra_playlist)
+        self.barra_faixa = QProgressBar()
+        self.barra_faixa.setFormat("Faixa atual: %p%")
+        layout.addWidget(self.barra_faixa)
+        self.rotulo_status = QLabel("Ocioso")
+        layout.addWidget(self.rotulo_status)
+        return caixa
 
-        self.genre_source = QComboBox()
-        self.genre_source.addItem("Nome da playlist (recomendado)", "playlist")
-        self.genre_source.addItem("Metadados da faixa, senão a playlist", "metadata")
-        self.genre_source.addItem("Sempre o texto abaixo", "fixed")
-        self.genre_source.setToolTip(
-            "O YouTube Music quase nunca informa o gênero. Usar o nome da playlist "
-            "aproveita a classificação que você mesmo fez ao montá-la."
-        )
-        form.addRow("Pasta de gênero:", self.genre_source)
-
-        self.default_genre = QLineEdit()
-        self.default_genre.setToolTip("Usado quando nada mais estiver disponível.")
-        form.addRow("Gênero de reserva:", self.default_genre)
-
-        self.default_album = QLineEdit()
-        form.addRow("Pasta para álbum ausente:", self.default_album)
-
-        return box
-
-    def _build_button_row(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        self.start_btn = QPushButton("Iniciar / Retomar")
-        self.start_btn.clicked.connect(lambda: self._on_start(False))
-        self.pause_btn = QPushButton("Pausar")
-        self.pause_btn.clicked.connect(lambda: self._on_pause_toggle())
-        self.stop_btn = QPushButton("Parar")
-        self.stop_btn.clicked.connect(lambda: self._on_stop())
-        self.requeue_btn = QPushButton("Reenfileirar falhas")
-        self.requeue_btn.clicked.connect(lambda: self._on_requeue())
-        self.reextract_btn = QPushButton("Reextrair playlist")
-        self.reextract_btn.clicked.connect(lambda: self._on_start(force_reextract=True))
-        for button in (
-            self.start_btn,
-            self.pause_btn,
-            self.stop_btn,
-            self.requeue_btn,
-            self.reextract_btn,
-        ):
-            row.addWidget(button)
-        row.addStretch(1)
-        return row
-
-    def _build_progress_box(self) -> QGroupBox:
-        box = QGroupBox("Progresso")
-        layout = QVBoxLayout(box)
-
-        self.counters = QLabel("Total: 0 | Baixadas: 0 | Falhas: 0 | Na fila: 0")
-        font = QFont()
-        font.setBold(True)
-        self.counters.setFont(font)
-        layout.addWidget(self.counters)
-
-        self.playlist_bar = QProgressBar()
-        self.playlist_bar.setFormat("Playlist: %p%")
-        layout.addWidget(self.playlist_bar)
-
-        self.file_bar = QProgressBar()
-        self.file_bar.setFormat("Faixa atual: %p%")
-        layout.addWidget(self.file_bar)
-
-        self.status_label = QLabel("Ocioso")
-        layout.addWidget(self.status_label)
-
-        self.structure_label = QLabel()
-        self.structure_label.setStyleSheet("color: #8a8a8a;")
-        self.structure_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        layout.addWidget(self.structure_label)
-        self.output_edit.textChanged.connect(self._refresh_structure_label)
-        self.ascii_only.toggled.connect(self._refresh_structure_label)
-        self.audio_format.currentIndexChanged.connect(self._refresh_structure_label)
-        self.genre_source.currentIndexChanged.connect(self._refresh_structure_label)
-        self.default_genre.textChanged.connect(self._refresh_structure_label)
-        return box
-
-    def _build_tree_box(self) -> QGroupBox:
-        box = QGroupBox("Estrutura de pastas criada")
-        layout = QVBoxLayout(box)
+    def _caixa_arvore(self) -> QGroupBox:
+        caixa = QGroupBox("Estrutura criada")
+        layout = QVBoxLayout(caixa)
         self.tree = QTreeWidget()
         self.tree.setHeaderLabels(["Gênero / Artista / Álbum", "Faixas"])
         self.tree.setColumnWidth(0, 520)
         layout.addWidget(self.tree)
-        return box
+        return caixa
 
-    def _build_log_box(self) -> QGroupBox:
-        box = QGroupBox("Log")
-        layout = QVBoxLayout(box)
-
-        controls = QHBoxLayout()
-        self.verbose_log = QCheckBox("Mostrar mensagens de depuração")
-        clear_btn = QPushButton("Limpar log")
-        clear_btn.clicked.connect(lambda: self.log_view.clear())
-        controls.addWidget(self.verbose_log)
-        controls.addStretch(1)
-        controls.addWidget(clear_btn)
-        layout.addLayout(controls)
-
+    def _caixa_log(self) -> QGroupBox:
+        caixa = QGroupBox("Log")
+        layout = QVBoxLayout(caixa)
+        topo = QHBoxLayout()
+        self.verbose_log = QCheckBox("Mostrar depuração")
+        limpar = QPushButton("Limpar")
+        limpar.clicked.connect(self.limpar_log)
+        topo.addWidget(self.verbose_log)
+        topo.addStretch(1)
+        topo.addWidget(limpar)
+        layout.addLayout(topo)
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setMaximumBlockCount(5000)
-        self.log_view.setStyleSheet(
-            "background:#1d1f21; color:#d6d6d6; font-family: monospace;"
-        )
+        # O QPlainTextEdit do log não tem papel próprio no tema; o fundo vem
+        # da folha global e a cor de cada linha é aplicada no HTML.
+        fonte = self.log_view.font()
+        fonte.setFamily("monospace")
+        self.log_view.setFont(fonte)
         layout.addWidget(self.log_view)
-        return box
+        return caixa
 
-    # ------------------------------------------------------------- settings
+    # -------------------------------------------------- ganchos JanelaBase
 
-    def _load_settings(self) -> None:
-        cfg = AppConfig.from_dict(
-            {
-                key: self.settings.value(key)
-                for key in AppConfig().to_dict()
-                if self.settings.contains(key)
-            }
-        )
-        self.url_edit.setText(str(cfg.playlist_url))
-        self.output_edit.setText(str(cfg.output_dir))
-        self.min_interval.setValue(float(cfg.min_interval))
-        self.jitter.setValue(float(cfg.jitter))
-        self.max_retries.setValue(int(cfg.max_retries))
-        self.max_consecutive.setValue(int(cfg.max_consecutive_failures))
-        self.block_backoff.setValue(float(cfg.block_base_backoff))
-        self.max_blocks.setValue(int(cfg.max_block_events))
-        self._select_data(self.audio_format, cfg.audio_format)
-        self.ffmpeg_path.setText(str(cfg.ffmpeg_path))
-        self.allow_remote_components.setChecked(_as_bool(cfg.allow_remote_components))
-        self.embed_metadata.setChecked(_as_bool(cfg.embed_metadata))
-        self.embed_thumbnail.setChecked(_as_bool(cfg.embed_thumbnail))
-        self.ascii_only.setChecked(_as_bool(cfg.ascii_only))
-        self._select_data(self.genre_source, cfg.genre_source)
-        self.default_genre.setText(str(cfg.default_genre))
-        self.default_album.setText(str(cfg.default_album))
-        self._select_data(self.cookies_mode, cfg.cookies_mode)
-        self.cookies_file.setText(str(cfg.cookies_file))
-        index = self.cookies_browser.findText(str(cfg.cookies_browser))
-        self.cookies_browser.setCurrentIndex(max(0, index))
-        self._update_cookie_widgets()
-        self._refresh_structure_label()
+    def estados(self) -> set:
+        return {"rodando"} if self._rodando else {"parado"}
 
-    def _save_settings(self) -> None:
-        for key, value in self.current_config().to_dict().items():
-            self.settings.setValue(key, value)
-        self.settings.sync()
+    def contexto_da_barra(self) -> str:
+        return self.url_edit.text().strip() if hasattr(self, "url_edit") else ""
+
+    def ao_trocar_tema(self) -> None:
+        """O log guarda cor por linha: a folha de estilo não alcança."""
+        self._repintar_log()
+
+    # ------------------------------------------------------- preferências
+
+    def _preferencias_app(self):
+        return ajustes(APP_NOME, self.PASTA_DADOS)
+
+    def _carregar_preferencias(self) -> None:
+        prefs = self._preferencias_app()
+        dados = {k: prefs.value(k) for k in AppConfig().to_dict() if prefs.contains(k)}
+        self.cfg = AppConfig.from_dict(dados)
+        self.url_edit.setText(str(self.cfg.playlist_url))
+        self.output_edit.setText(str(self.cfg.output_dir))
+        self.min_interval.setValue(float(self.cfg.min_interval))
+        self._selecionar(self.audio_format, self.cfg.audio_format)
+        self._selecionar(self.genre_source, self.cfg.genre_source)
+        self._selecionar(self.cookies_mode, self.cfg.cookies_mode)
+        self.cookies_file.setText(str(self.cfg.cookies_file))
+        indice = self.cookies_browser.findText(str(self.cfg.cookies_browser))
+        self.cookies_browser.setCurrentIndex(max(0, indice))
+        self.verbose_log.setChecked(como_bool(prefs.value("verbose_log"), False))
+        self._atualizar_cookies()
+        self._atualizar_estrutura()
+
+    def _salvar_preferencias(self) -> None:
+        prefs = self._preferencias_app()
+        for chave, valor in self.config_atual().to_dict().items():
+            prefs.setValue(chave, valor)
+        prefs.setValue("verbose_log", self.verbose_log.isChecked())
+        prefs.sync()
 
     @staticmethod
-    def _select_data(combo: QComboBox, value) -> None:
-        index = combo.findData(value)
-        combo.setCurrentIndex(index if index >= 0 else 0)
+    def _selecionar(combo: QComboBox, valor) -> None:
+        indice = combo.findData(valor)
+        combo.setCurrentIndex(indice if indice >= 0 else 0)
 
-    def current_config(self) -> AppConfig:
-        cfg = AppConfig(
-            playlist_url=self.url_edit.text().strip(),
-            output_dir=self.output_edit.text().strip(),
-            min_interval=self.min_interval.value(),
-            jitter=self.jitter.value(),
-            audio_format=self.audio_format.currentData(),
-            ffmpeg_path=self.ffmpeg_path.text().strip(),
-            allow_remote_components=self.allow_remote_components.isChecked(),
-            embed_thumbnail=self.embed_thumbnail.isChecked(),
-            embed_metadata=self.embed_metadata.isChecked(),
-            cookies_mode=self.cookies_mode.currentData(),
-            cookies_file=self.cookies_file.text().strip(),
-            cookies_browser=self.cookies_browser.currentText(),
-            genre_source=self.genre_source.currentData(),
-            default_genre=self.default_genre.text().strip() or "Sem Genero",
-            default_album=self.default_album.text().strip() or "Singles",
-            ascii_only=self.ascii_only.isChecked(),
-            max_retries=self.max_retries.value(),
-            max_consecutive_failures=self.max_consecutive.value(),
-            block_base_backoff=self.block_backoff.value(),
-            max_block_events=self.max_blocks.value(),
-        )
-        cfg.normalize()
-        return cfg
+    def config_atual(self) -> AppConfig:
+        """A tela principal manda; o resto vem do que ficou nas opções."""
+        self.cfg.playlist_url = self.url_edit.text().strip()
+        self.cfg.output_dir = self.output_edit.text().strip()
+        self.cfg.min_interval = self.min_interval.value()
+        self.cfg.audio_format = self.audio_format.currentData()
+        self.cfg.genre_source = self.genre_source.currentData()
+        self.cfg.cookies_mode = self.cookies_mode.currentData()
+        self.cfg.cookies_file = self.cookies_file.text().strip()
+        self.cfg.cookies_browser = self.cookies_browser.currentText()
+        self.cfg.normalize()
+        return self.cfg
 
-    # --------------------------------------------------------------- ações
+    # ------------------------------------------------------------- ações
 
-    def _choose_output_dir(self) -> None:
-        start = self.output_edit.text().strip() or str(Path.home())
-        chosen = QFileDialog.getExistingDirectory(self, "Diretório de saída", start)
-        if chosen:
-            self.output_edit.setText(chosen)
-
-    def _choose_ffmpeg(self) -> None:
-        chosen, _ = QFileDialog.getOpenFileName(
-            self,
-            "Executável do ffmpeg",
-            self.ffmpeg_path.text().strip() or str(Path.home()),
-            "ffmpeg (ffmpeg.exe ffmpeg);;Todos (*)",
-        )
-        if chosen:
-            self.ffmpeg_path.setText(chosen)
-            self._report_ffmpeg()
-
-    def _report_ffmpeg(self) -> None:
-        """Mostra no log o ffmpeg que seria usado agora."""
-        configured = self.ffmpeg_path.text().strip()
-        found = find_ffmpeg(configured)
-        if found:
-            self._append_log("ok", f"ffmpeg encontrado: {found}")
-        else:
-            for line in describe_missing_ffmpeg(configured).splitlines():
-                self._append_log("warn", line)
-
-    def _choose_cookies_file(self) -> None:
-        chosen, _ = QFileDialog.getOpenFileName(
-            self, "Arquivo de cookies", str(Path.home()), "Cookies (*.txt);;Todos (*)"
-        )
-        if chosen:
-            self.cookies_file.setText(chosen)
-
-    def _update_cookie_widgets(self) -> None:
-        mode = self.cookies_mode.currentData()
-        self.cookies_file.setVisible(mode == "file")
-        self.cookies_browse.setVisible(mode == "file")
-        self.cookies_browser.setVisible(mode == "browser")
-
-    def _refresh_structure_label(self) -> None:
-        """Mostra um caminho de exemplo igual ao que será criado de verdade.
-
-        Passa pelo mesmo saneamento dos downloads: com "Somente ASCII" ligado o
-        exemplo aparece sem acentos, como os arquivos vão aparecer no pen drive.
-        """
-        audio_format = self.audio_format.currentData()
-        example = preview_path(
-            self.output_edit.text(),
-            ascii_only=self.ascii_only.isChecked(),
-            extension="ext" if audio_format == "best" else audio_format,
-            genre=self._preview_genre(),
-        )
-        self.structure_label.setText(f"Estrutura de destino:  {example}")
-
-    def _preview_genre(self) -> str:
-        """Nome que a pasta de gênero terá, conforme a fonte escolhida."""
-        source = self.genre_source.currentData()
-        if source == "fixed":
-            return self.default_genre.text().strip() or "Sem Genero"
-        if source == "playlist":
-            row = self.store.get_playlist() if self.store is not None else None
-            titulo = (row["title"] if row else "") or ""
-            return titulo or "Nome da playlist"
-        return "Gênero"
-
-    def _check_ffmpeg(self) -> None:
-        self._report_ffmpeg()
-        solver = ejs_package_version()
-        if solver:
-            self._append_log("info", f"Solucionador de desafios (yt-dlp-ejs): {solver}")
-        else:
-            for line in describe_missing_ejs().splitlines():
-                self._append_log("warn", line)
-
-    def _open_store(self, cfg: AppConfig) -> QueueStore:
-        db_path = cfg.db_path()
-        if self.store is not None and self.store.db_path == db_path:
-            return self.store
-        if self.store is not None:
-            self.store.close()
-        self.store = QueueStore(db_path)
-        self._rebuild_tree()
-        self._on_stats(self.store.stats())
-        return self.store
-
-    def _on_start(self, force_reextract: bool = False) -> None:
-        if self.thread is not None and self.thread.isRunning():
+    def iniciar(self, force_reextract: bool = False) -> None:
+        if self._rodando:
             return
-        cfg = self.current_config()
-        problems = cfg.validate()
-        if problems:
-            QMessageBox.warning(self, "Configuração incompleta", "\n".join(problems))
+        cfg = self.config_atual()
+        problemas = cfg.validate()
+        if problemas:
+            QMessageBox.warning(self, "Configuração incompleta", "\n".join(problemas))
             return
-
         try:
             Path(cfg.output_dir).expanduser().mkdir(parents=True, exist_ok=True)
-            store = self._open_store(cfg)
-        except OSError as exc:
-            QMessageBox.critical(self, "Erro", f"Não foi possível usar o diretório:\n{exc}")
+            store = self._abrir_store(cfg)
+        except OSError as erro:
+            QMessageBox.critical(self, "Erro", f"Não foi possível usar o diretório:\n{erro}")
             return
 
-        # Salva a escolha real do usuário antes de um eventual rebaixamento
-        # temporário para "sem cookies".
-        self._save_settings()
-
-        # Verificações de ambiente antes de começar: descobrir isso no meio de
-        # uma playlist longa custa tempo e não tem conserto automático.
-        allow_missing_runtime = self._confirm_js_runtime()
-        if allow_missing_runtime is None:
+        self._salvar_preferencias()
+        permitir_sem_runtime = self._confirmar_runtime()
+        if permitir_sem_runtime is None or not self._confirmar_ffmpeg(cfg):
             return
-        if not self._confirm_ffmpeg(cfg):
-            return
-        if not self._confirm_cookies(cfg):
+        if not self._confirmar_cookies(cfg):
             return
 
-        cfg = self.current_config()  # pode ter mudado no diálogo de cookies
+        cfg = self.config_atual()
         self.engine = DownloadEngine(
-            cfg, store, self.bridge.callbacks(), allow_missing_js_runtime=allow_missing_runtime
+            cfg, store, self.bridge.callbacks(),
+            allow_missing_js_runtime=permitir_sem_runtime,
         )
         self.thread = EngineThread(self.engine, force_reextract)
-        self.thread.finished.connect(self._on_thread_finished)
-        self._append_log("info", f"Fila persistente: {cfg.db_path()}")
-        self._update_controls(running=True)
+        self.thread.finished.connect(self._ao_terminar_thread)
+        self.registrar("info", f"Fila persistente: {cfg.db_path()}")
+        self._definir_rodando(True)
         self.thread.start()
 
-    def _ask_continue(self, title: str, text: str, detail: str, go_on: str) -> bool:
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Warning)
-        box.setWindowTitle(title)
-        box.setText(text)
-        box.setInformativeText(detail)
-        proceed = box.addButton(go_on, QMessageBox.AcceptRole)
-        box.addButton("Cancelar", QMessageBox.RejectRole)
-        box.setDefaultButton(proceed)
-        box.exec()
-        return box.clickedButton() is proceed
+    def reextrair(self) -> None:
+        self.iniciar(force_reextract=True)
 
-    def _confirm_js_runtime(self) -> Optional[bool]:
-        """None = cancelar. False = runtime presente. True = seguir sem ele."""
-        runtime = find_js_runtime()
-        if runtime is not None:
-            self._append_log("info", f"Runtime JavaScript: {runtime}")
-            return False
-
-        detail = describe_missing_js_runtime()
-        for line in detail.splitlines():
-            self._append_log("error", line)
-        if self._ask_continue(
-            "Runtime JavaScript ausente",
-            "O YouTube exige um runtime JavaScript para liberar os links de áudio.",
-            detail,
-            "Tentar mesmo assim",
-        ):
-            self._append_log("warn", "Seguindo sem runtime JavaScript; os downloads devem falhar.")
-            return True
-        self._append_log("warn", "Início cancelado: instale o Deno e tente de novo.")
-        return None
-
-    def _confirm_ffmpeg(self, cfg: AppConfig) -> bool:
-        needs_ffmpeg = (
-            cfg.audio_format != "best" or cfg.embed_metadata or cfg.embed_thumbnail
-        )
-        if not needs_ffmpeg:
-            return True
-        found = find_ffmpeg(cfg.ffmpeg_path)
-        if found:
-            self._append_log("info", f"ffmpeg: {found}")
-            return True
-
-        detail = describe_missing_ffmpeg(cfg.ffmpeg_path)
-        for line in detail.splitlines():
-            self._append_log("warn", line)
-        if self._ask_continue(
-            "ffmpeg não encontrado",
-            "O ffmpeg não está instalado.",
-            detail,
-            "Baixar sem converter",
-        ):
-            return True
-        self._append_log("warn", "Início cancelado: instale o ffmpeg e tente de novo.")
-        return False
-
-    def _confirm_cookies(self, cfg: AppConfig) -> bool:
-        """Testa os cookies. Deixa o usuário seguir sem eles se falharem."""
-        problem = check_cookies(cfg)
-        if problem is None:
-            return True
-
-        for line in problem.splitlines():
-            self._append_log("error", line)
-
-        box = QMessageBox(self)
-        box.setIcon(QMessageBox.Warning)
-        box.setWindowTitle("Problema com os cookies")
-        box.setText("Não foi possível carregar os cookies configurados.")
-        box.setInformativeText(problem)
-        without = box.addButton("Continuar sem cookies", QMessageBox.AcceptRole)
-        box.addButton("Cancelar", QMessageBox.RejectRole)
-        box.setDefaultButton(without)
-        box.exec()
-
-        if box.clickedButton() is not without:
-            self._append_log("warn", "Início cancelado por causa dos cookies.")
-            return False
-
-        # Vale só para esta execução; a configuração salva não é alterada.
-        self._select_data(self.cookies_mode, "none")
-        self._update_cookie_widgets()
-        self._append_log("warn", "Seguindo sem cookies nesta execução.")
-        return True
-
-    def _on_pause_toggle(self) -> None:
+    def alternar_pausa(self) -> None:
         if self.engine is None:
             return
         if self.engine.is_paused:
             self.engine.resume()
-            self.pause_btn.setText("Pausar")
+            self.act_pausar.setText("Pausar")
         else:
             self.engine.pause()
-            self.pause_btn.setText("Retomar")
+            self.act_pausar.setText("Retomar")
 
-    def _on_stop(self) -> None:
+    def parar(self) -> None:
         if self.engine is not None:
             self.engine.stop()
-            self.stop_btn.setEnabled(False)
-            self._append_log("warn", "Parada solicitada; terminando a faixa atual...")
+            self.act_parar.setEnabled(False)
+            self.registrar("warn", "Parada solicitada; terminando a faixa atual...")
 
-    def _on_requeue(self) -> None:
-        if self.thread is not None and self.thread.isRunning():
-            QMessageBox.information(
-                self, "Em execução", "Pare o download antes de reenfileirar as falhas."
-            )
+    def reenfileirar(self) -> None:
+        store = self._store_para_leitura()
+        if store is None:
             return
-        cfg = self.current_config()
+        quantidade = store.requeue_failed()
+        self.registrar("info", f"{quantidade} faixa(s) com falha voltaram para a fila.")
+        self._ao_stats(store.stats())
+
+    def limpar_cache_generos(self) -> None:
+        store = self._store_para_leitura()
+        if store is None:
+            return
+        quantidade = store.clear_genre_cache()
+        self.registrar("info", f"{quantidade} gênero(s) em cache foram esquecidos.")
+
+    def limpar_log(self) -> None:
+        self.log_view.clear()
+        self._linhas_log = []
+
+    def abrir_opcoes(self) -> None:
+        dialogo = OpcoesAvancadas(self.config_atual(), self)
+        if dialogo.exec() == QDialog.DialogCode.Accepted:
+            self.cfg = dialogo.aplicar(self.cfg)
+            self.cfg.normalize()
+            self._salvar_preferencias()
+            self._atualizar_estrutura()
+            self.registrar("info", "Opções avançadas atualizadas.")
+
+    def testar_ferramentas(self) -> None:
+        """Diz, em três linhas, se o programa tem o que precisa para baixar."""
+        runtime = find_js_runtime()
+        if runtime:
+            self.registrar("info", f"Runtime JavaScript: {runtime}")
+        else:
+            for linha in describe_missing_js_runtime().splitlines():
+                self.registrar("warn", linha)
+        solver = ejs_package_version()
+        if solver:
+            self.registrar("info", f"Solucionador de desafios: {solver}")
+        else:
+            for linha in describe_missing_ejs().splitlines():
+                self.registrar("warn", linha)
+        encontrado = find_ffmpeg(self.cfg.ffmpeg_path)
+        if encontrado:
+            self.registrar("info", f"ffmpeg: {encontrado}")
+        else:
+            for linha in describe_missing_ffmpeg(self.cfg.ffmpeg_path).splitlines():
+                self.registrar("warn", linha)
+
+    # --------------------------------------------------------- diálogos
+
+    def _perguntar(self, titulo: str, texto: str, detalhe: str, seguir: str) -> bool:
+        caixa = QMessageBox(self)
+        caixa.setIcon(QMessageBox.Icon.Warning)
+        caixa.setWindowTitle(titulo)
+        caixa.setText(texto)
+        caixa.setInformativeText(detalhe)
+        prosseguir = caixa.addButton(seguir, QMessageBox.ButtonRole.AcceptRole)
+        caixa.addButton("Cancelar", QMessageBox.ButtonRole.RejectRole)
+        caixa.setDefaultButton(prosseguir)
+        caixa.exec()
+        return caixa.clickedButton() is prosseguir
+
+    def _confirmar_runtime(self) -> Optional[bool]:
+        """None = cancelar. False = runtime presente. True = seguir sem ele."""
+        if find_js_runtime() is not None:
+            return False
+        detalhe = describe_missing_js_runtime()
+        for linha in detalhe.splitlines():
+            self.registrar("error", linha)
+        if self._perguntar(
+            "Runtime JavaScript ausente",
+            "O YouTube exige um runtime JavaScript para liberar os links de áudio.",
+            detalhe,
+            "Tentar mesmo assim",
+        ):
+            return True
+        self.registrar("warn", "Início cancelado: instale o Deno e tente de novo.")
+        return None
+
+    def _confirmar_ffmpeg(self, cfg: AppConfig) -> bool:
+        precisa = cfg.audio_format != "best" or cfg.embed_metadata or cfg.embed_thumbnail
+        if not precisa or find_ffmpeg(cfg.ffmpeg_path):
+            return True
+        detalhe = describe_missing_ffmpeg(cfg.ffmpeg_path)
+        for linha in detalhe.splitlines():
+            self.registrar("warn", linha)
+        if self._perguntar(
+            "ffmpeg não encontrado", "O ffmpeg não está disponível.", detalhe,
+            "Baixar sem converter",
+        ):
+            return True
+        self.registrar("warn", "Início cancelado: instale o ffmpeg e tente de novo.")
+        return False
+
+    def _confirmar_cookies(self, cfg: AppConfig) -> bool:
+        problema = check_cookies(cfg)
+        if problema is None:
+            return True
+        for linha in problema.splitlines():
+            self.registrar("error", linha)
+        if not self._perguntar(
+            "Problema com os cookies",
+            "Não foi possível carregar os cookies configurados.",
+            problema,
+            "Continuar sem cookies",
+        ):
+            self.registrar("warn", "Início cancelado por causa dos cookies.")
+            return False
+        self._selecionar(self.cookies_mode, "none")
+        self._atualizar_cookies()
+        self.registrar("warn", "Seguindo sem cookies nesta execução.")
+        return True
+
+    # ------------------------------------------------------------ apoio
+
+    def _escolher_saida(self) -> None:
+        inicio = self.output_edit.text().strip() or str(Path.home())
+        escolhido = QFileDialog.getExistingDirectory(self, "Diretório de saída", inicio)
+        if escolhido:
+            self.output_edit.setText(escolhido)
+            self._atualizar_estrutura()
+
+    def _escolher_cookies(self) -> None:
+        escolhido, _ = QFileDialog.getOpenFileName(
+            self, "Arquivo de cookies", str(Path.home()), "Cookies (*.txt);;Todos (*)"
+        )
+        if escolhido:
+            self.cookies_file.setText(escolhido)
+
+    def _atualizar_cookies(self) -> None:
+        modo = self.cookies_mode.currentData()
+        self.cookies_file.setVisible(modo == "file")
+        self.cookies_browse.setVisible(modo == "file")
+        self.cookies_browser.setVisible(modo == "browser")
+
+    def _genero_de_exemplo(self) -> str:
+        fonte = self.genre_source.currentData()
+        if fonte == "fixed":
+            return self.cfg.default_genre
+        if fonte == "online":
+            return "Gênero consultado"
+        if fonte == "playlist":
+            linha = self.store.get_playlist() if self.store is not None else None
+            return ((linha["title"] if linha else "") or "") or "Nome da playlist"
+        return "Gênero"
+
+    def _atualizar_estrutura(self) -> None:
+        formato = self.audio_format.currentData()
+        self.estrutura.setText(
+            preview_path(
+                self.output_edit.text(),
+                ascii_only=self.cfg.ascii_only,
+                extension="ext" if formato == "best" else formato,
+                genre=self._genero_de_exemplo(),
+            )
+        )
+
+    def _abrir_store(self, cfg: AppConfig) -> QueueStore:
+        caminho = cfg.db_path()
+        if self.store is not None and self.store.db_path == caminho:
+            return self.store
+        if self.store is not None:
+            self.store.close()
+        self.store = QueueStore(caminho)
+        self._remontar_arvore()
+        self._ao_stats(self.store.stats())
+        self._atualizar_estrutura()
+        return self.store
+
+    def _store_para_leitura(self) -> Optional[QueueStore]:
+        cfg = self.config_atual()
         if not cfg.output_dir.strip():
             QMessageBox.warning(self, "Configuração", "Escolha o diretório de saída.")
-            return
+            return None
         if not cfg.db_path().exists():
             QMessageBox.information(self, "Fila", "Nenhuma fila encontrada nesse diretório.")
-            return
-        store = self._open_store(cfg)
-        count = store.requeue_failed()
-        self._append_log("info", f"{count} faixa(s) com falha voltaram para a fila.")
-        self._on_stats(store.stats())
+            return None
+        return self._abrir_store(cfg)
 
-    # --------------------------------------------------------------- sinais
+    def _definir_rodando(self, rodando: bool) -> None:
+        self._rodando = rodando
+        self.atualizar_acoes()
+        for widget in (
+            self.url_edit, self.output_edit, self.cookies_mode, self.cookies_file,
+            self.cookies_browser, self.audio_format, self.genre_source,
+        ):
+            widget.setEnabled(not rodando)
 
-    def _connect_bridge(self) -> None:
-        self.bridge.log.connect(self._append_log)
-        self.bridge.status.connect(self._on_status)
-        self.bridge.stats.connect(self._on_stats)
-        self.bridge.item_done.connect(self._on_item_done)
-        self.bridge.file_progress.connect(self._on_file_progress)
-        self.bridge.finished.connect(self._on_engine_finished)
+    # ----------------------------------------------------------- sinais
+
+    def _conectar_bridge(self) -> None:
+        self._linhas_log = []
+        self.bridge.log.connect(self.registrar)
+        self.bridge.status.connect(self._ao_status)
+        self.bridge.stats.connect(self._ao_stats)
+        self.bridge.item_done.connect(self._ao_item_pronto)
+        self.bridge.file_progress.connect(self._ao_progresso)
+        self.bridge.finished.connect(self._ao_terminar_motor)
 
     @Slot(str, str)
-    def _append_log(self, level: str, message: str) -> None:
-        if level == "debug" and not self.verbose_log.isChecked():
+    def registrar(self, nivel: str, mensagem: str) -> None:
+        if nivel == "debug" and not self.verbose_log.isChecked():
             return
-        color = LOG_COLORS.get(level, "#d6d6d6")
-        safe = (
-            message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        )
-        self.log_view.appendHtml(f'<span style="color:{color};">{safe}</span>')
+        self._linhas_log.append((nivel, mensagem))
+        del self._linhas_log[:-5000]
+        self.log_view.appendHtml(self._linha_html(nivel, mensagem))
+
+    @staticmethod
+    def _escapar(texto: str) -> str:
+        return texto.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    def _linha_html(self, nivel: str, mensagem: str) -> str:
+        cor = getattr(tema.atual(), NIVEIS_LOG.get(nivel, "ink"))
+        return f'<span style="color:{cor};">{self._escapar(mensagem)}</span>'
+
+    def _repintar_log(self) -> None:
+        self.log_view.clear()
+        for nivel, mensagem in self._linhas_log:
+            self.log_view.appendHtml(self._linha_html(nivel, mensagem))
 
     @Slot(str)
-    def _on_status(self, text: str) -> None:
-        self.status_label.setText(text)
-        self.statusBar().showMessage(text)
+    def _ao_status(self, texto: str) -> None:
+        self.rotulo_status.setText(texto)
+        self.statusBar().showMessage(texto)
 
     @Slot(object)
-    def _on_stats(self, stats: QueueStats) -> None:
-        self.counters.setText(
+    def _ao_stats(self, stats: QueueStats) -> None:
+        self.contadores.setText(
             f"Total: {stats.total} | Baixadas: {stats.done} | "
             f"Falhas: {stats.failed} | Na fila: {stats.pending}"
         )
-        self.playlist_bar.setMaximum(max(1, stats.total))
-        self.playlist_bar.setValue(stats.done + stats.failed)
+        self.barra_playlist.setMaximum(max(1, stats.total))
+        self.barra_playlist.setValue(stats.done + stats.failed)
 
     @Slot(float, str)
-    def _on_file_progress(self, percent: float, text: str) -> None:
-        self.file_bar.setValue(int(percent))
-        self.file_bar.setFormat(f"Faixa atual: {text}")
+    def _ao_progresso(self, percentual: float, texto: str) -> None:
+        self.barra_faixa.setValue(int(percentual))
+        self.barra_faixa.setFormat(f"Faixa atual: {texto}")
 
     @Slot(str, object)
-    def _on_item_done(self, path: str, tags: TrackTags) -> None:
-        ascii_only = self.ascii_only.isChecked()
-        parts = [sanitize_component(p, ascii_only) for p in tags.folder_parts()]
-        node = None
-        key: tuple = ()
-        for part in parts:
-            key = key + (part,)
-            existing = self._tree_nodes.get(key)
-            if existing is None:
-                existing = QTreeWidgetItem([part, "0"])
-                self._tree_nodes[key] = existing
-                if node is None:
-                    self.tree.addTopLevelItem(existing)
-                else:
-                    node.addChild(existing)
-            node = existing
-            node.setText(1, str(int(node.text(1) or 0) + 1))
+    def _ao_item_pronto(self, caminho: str, tags: TrackTags) -> None:
+        partes = [sanitize_component(p, self.cfg.ascii_only) for p in tags.folder_parts()]
+        self._acrescentar_na_arvore(partes, 1)
         if self.tree.topLevelItemCount():
             self.tree.expandItem(self.tree.topLevelItem(0))
 
-    @Slot(str)
-    def _on_engine_finished(self, reason: str) -> None:
-        # O motor já registrou o motivo no log; aqui só reiniciamos os indicadores.
-        self.statusBar().showMessage(reason)
-        self.file_bar.setValue(0)
-        self.file_bar.setFormat("Faixa atual: %p%")
+    def _acrescentar_na_arvore(self, partes, quantidade: int) -> None:
+        no = None
+        chave: tuple = ()
+        for parte in partes:
+            chave = chave + (parte,)
+            existente = self._tree_nodes.get(chave)
+            if existente is None:
+                existente = QTreeWidgetItem([parte, "0"])
+                self._tree_nodes[chave] = existente
+                if no is None:
+                    self.tree.addTopLevelItem(existente)
+                else:
+                    no.addChild(existente)
+            no = existente
+            no.setText(1, str(int(no.text(1) or 0) + quantidade))
 
-    def _on_thread_finished(self) -> None:
-        self._update_controls(running=False)
-        self.pause_btn.setText("Pausar")
-        if self.store is not None:
-            self._on_stats(self.store.stats())
-
-    def _update_controls(self, running: bool) -> None:
-        self.start_btn.setEnabled(not running)
-        self.reextract_btn.setEnabled(not running)
-        self.requeue_btn.setEnabled(not running)
-        self.pause_btn.setEnabled(running)
-        self.stop_btn.setEnabled(running)
-        for widget in (
-            self.url_edit,
-            self.output_edit,
-            self.cookies_mode,
-            self.cookies_file,
-            self.cookies_browser,
-            self.audio_format,
-            self.ffmpeg_path,
-            self.allow_remote_components,
-            self.ascii_only,
-            self.genre_source,
-            self.default_genre,
-            self.default_album,
-        ):
-            widget.setEnabled(not running)
-
-    def _rebuild_tree(self) -> None:
-        """Reconstrói a árvore de pastas a partir do que já está no banco."""
+    def _remontar_arvore(self) -> None:
         self.tree.clear()
         self._tree_nodes.clear()
         if self.store is None:
             return
-        for genre, artist, album, count in self.store.done_tree():
-            node = None
-            key: tuple = ()
-            for part in (genre or "?", artist or "?", album or "?"):
-                key = key + (part,)
-                existing = self._tree_nodes.get(key)
-                if existing is None:
-                    existing = QTreeWidgetItem([part, "0"])
-                    self._tree_nodes[key] = existing
-                    if node is None:
-                        self.tree.addTopLevelItem(existing)
-                    else:
-                        node.addChild(existing)
-                node = existing
-                node.setText(1, str(int(node.text(1) or 0) + count))
+        for genero, artista, album, quantidade in self.store.done_tree():
+            self._acrescentar_na_arvore(
+                [genero or "?", artista or "?", album or "?"], quantidade
+            )
 
-    # --------------------------------------------------------------- janela
+    @Slot(str)
+    def _ao_terminar_motor(self, motivo: str) -> None:
+        self.statusBar().showMessage(motivo)
+        self.barra_faixa.setValue(0)
+        self.barra_faixa.setFormat("Faixa atual: %p%")
 
-    def closeEvent(self, event) -> None:
+    @Slot()
+    def _ao_terminar_thread(self) -> None:
+        self._definir_rodando(False)
+        self.act_pausar.setText("Pausar")
+        if self.store is not None:
+            self._ao_stats(self.store.stats())
+            self._atualizar_estrutura()
+
+    # ----------------------------------------------------------- janela
+
+    def closeEvent(self, evento) -> None:
         if self.thread is not None and self.thread.isRunning():
-            answer = QMessageBox.question(
-                self,
-                "Sair",
+            resposta = QMessageBox.question(
+                self, "Sair",
                 "Um download está em andamento. Parar e sair?\n"
                 "A fila fica salva e pode ser retomada depois.",
             )
-            if answer != QMessageBox.Yes:
-                event.ignore()
+            if resposta != QMessageBox.StandardButton.Yes:
+                evento.ignore()
                 return
             if self.engine is not None:
                 self.engine.stop()
             self.thread.wait(30000)
-        self._save_settings()
+        self._salvar_preferencias()
         if self.store is not None:
             self.store.close()
-        event.accept()
-
-
-def _as_bool(value) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in ("1", "true", "yes", "on")
-    return bool(value)
+        super().closeEvent(evento)
 
 
 def main() -> int:
-    app = QApplication(sys.argv)
-    app.setApplicationName(APP_NAME)
-    app.setOrganizationName(ORG_NAME)
-    window = MainWindow()
-    window.show()
+    from .assinatura import aplicacao, icones, janela_nativa
+
+    app = aplicacao.criar(APP_NOME, sys.argv)
+    janela_nativa.definir_escotilha("PENDRIVEMAKER_BARRA_NATIVA")
+    icones.definir_prefixo("pendrivemaker_icones")
+    janela = MainWindow()
+    janela.dimensionar_para_a_tela()
+    janela.show()
     return app.exec()

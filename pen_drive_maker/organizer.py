@@ -36,10 +36,11 @@ _FEATURING = re.compile(
 
 
 # De onde sai o nome da pasta de gênero.
-GENRE_FROM_PLAYLIST = "playlist"   # nome da playlist (padrão)
+GENRE_ONLINE = "online"            # consulta na internet (padrão)
+GENRE_FROM_PLAYLIST = "playlist"   # nome da playlist
 GENRE_FROM_METADATA = "metadata"   # metadados da faixa, com a playlist de reserva
 GENRE_FIXED = "fixed"              # sempre o texto configurado
-GENRE_SOURCES = (GENRE_FROM_PLAYLIST, GENRE_FROM_METADATA, GENRE_FIXED)
+GENRE_SOURCES = (GENRE_ONLINE, GENRE_FROM_PLAYLIST, GENRE_FROM_METADATA, GENRE_FIXED)
 
 
 @dataclass
@@ -113,8 +114,9 @@ def resolve_tags(
     info: Dict[str, Any],
     default_genre: str,
     default_album: str,
-    genre_source: str = GENRE_FROM_PLAYLIST,
+    genre_source: str = GENRE_ONLINE,
     playlist_genre: str = "",
+    online_genre: str = "",
 ) -> TrackTags:
     """Extrai gênero/artista/álbum do dicionário de informações do yt-dlp.
 
@@ -123,10 +125,13 @@ def resolve_tags(
     faixas, e é essa classificação que serve ao pen drive.
     """
     playlist_genre = (playlist_genre or "").strip()
+    online_genre = (online_genre or "").strip()
     if genre_source == GENRE_FIXED:
         genre = default_genre
     elif genre_source == GENRE_FROM_METADATA:
         genre = metadata_genre(info) or playlist_genre or default_genre
+    elif genre_source == GENRE_ONLINE:
+        genre = online_genre or metadata_genre(info) or playlist_genre or default_genre
     else:  # GENRE_FROM_PLAYLIST
         genre = playlist_genre or metadata_genre(info) or default_genre
 

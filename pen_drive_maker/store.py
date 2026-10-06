@@ -42,6 +42,12 @@ CREATE TABLE IF NOT EXISTS items (
 );
 
 CREATE INDEX IF NOT EXISTS idx_items_status ON items(status, position);
+
+CREATE TABLE IF NOT EXISTS genre_cache (
+    key        TEXT PRIMARY KEY,
+    genre      TEXT NOT NULL,
+    fetched_at TEXT
+);
 """
 
 
@@ -116,6 +122,32 @@ class QueueStore:
             self._conn.execute("DELETE FROM items")
             self._conn.execute("DELETE FROM playlist")
             self._conn.commit()
+
+    # ------------------------------------------------------ cache de gênero
+
+    def get_genre(self, key: str) -> Optional[str]:
+        """Gênero consultado antes. String vazia = consultado e não encontrado."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT genre FROM genre_cache WHERE key = ?", (key,)
+            ).fetchone()
+        return row["genre"] if row else None
+
+    def set_genre(self, key: str, genre: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO genre_cache (key, genre, fetched_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET genre=excluded.genre, "
+                "fetched_at=excluded.fetched_at",
+                (key, genre, _now()),
+            )
+            self._conn.commit()
+
+    def clear_genre_cache(self) -> int:
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM genre_cache")
+            self._conn.commit()
+            return cur.rowcount
 
     # ------------------------------------------------------------------- itens
 

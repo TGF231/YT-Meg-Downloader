@@ -340,6 +340,20 @@ class CookieTest(unittest.TestCase):
         self.assertTrue(reasons and "cookies" in reasons[0].lower())
 
 
+class FakeLookup:
+    """Dublê de GenreLookup: nunca sai para a rede."""
+
+    resposta = None
+    consultas = []
+
+    def __init__(self, cache, group=True, log=None, **kwargs):
+        self.disabled = False
+
+    def lookup(self, artist, title):
+        FakeLookup.consultas.append((artist, title))
+        return FakeLookup.resposta
+
+
 class PreviewPathTest(unittest.TestCase):
     """O exemplo mostrado na interface tem de casar com o que é criado."""
 
@@ -422,6 +436,12 @@ class EngineFlowTest(unittest.TestCase):
         self._real_find_ffmpeg = downloader.find_ffmpeg
         downloader.find_js_runtime = lambda: "/fake/deno"
         downloader.find_ffmpeg = lambda configured="": "/fake/ffmpeg"
+        # Nenhum teste pode tocar a rede: a consulta de gênero é dublada e os
+        # testes que a exercitam trocam FakeLookup.resposta.
+        self._real_lookup = downloader.GenreLookup
+        downloader.GenreLookup = FakeLookup
+        FakeLookup.resposta = None
+        FakeLookup.consultas = []
         FakeYDL.calls = {"playlist": 0, "probe": 0, "download": 0}
         FakeYDL.tracks = {
             f"id{i:02d}": {
@@ -447,6 +467,7 @@ class EngineFlowTest(unittest.TestCase):
             max_retries=2,
             max_consecutive_failures=3,
             embed_thumbnail=False,
+            genre_source="playlist",
         )
         self.cfg.normalize()
         self.store = QueueStore(self.cfg.db_path())
@@ -455,6 +476,7 @@ class EngineFlowTest(unittest.TestCase):
         downloader.YoutubeDL = self._real_ydl
         downloader.find_js_runtime = self._real_find_runtime
         downloader.find_ffmpeg = self._real_find_ffmpeg
+        downloader.GenreLookup = self._real_lookup
         self.store.close()
 
     def _run(self, force=False):
@@ -472,6 +494,33 @@ class EngineFlowTest(unittest.TestCase):
         # quase nunca informa gênero, e quem monta a playlist já classificou.
         self.assertIn("Playlist de Teste/Artista/Album/01 - Musica 1.m4a", files)
         self.assertIn("Playlist de Teste/Artista/Album/02 - Musica 2.m4a", files)
+
+    def test_online_mode_uses_the_looked_up_genre(self):
+        self.cfg.genre_source = "online"
+        FakeLookup.resposta = "Eletronica"
+        self._run()
+        files = sorted(p.relative_to(self.tmp).as_posix() for p in pathlib.Path(self.tmp).rglob("*.m4a"))
+        self.assertTrue(all(f.startswith("Eletronica/") for f in files), files)
+        self.assertEqual(len(FakeLookup.consultas), 5, "uma consulta por faixa")
+
+    def test_online_mode_falls_back_when_nothing_is_found(self):
+        """Sem resposta: metadados primeiro, nome da playlist depois."""
+        self.cfg.genre_source = "online"
+        FakeLookup.resposta = None
+        self._run()
+        files = sorted(p.relative_to(self.tmp).as_posix() for p in pathlib.Path(self.tmp).rglob("*.m4a"))
+        # As faixas ímpares do dublê têm genre="Rock"; as pares não têm nada.
+        self.assertIn("Rock/Artista/Album/01 - Musica 1.m4a", files)
+        self.assertIn("Playlist de Teste/Artista/Album/02 - Musica 2.m4a", files)
+        # O que nunca pode acontecer é faixa sem pasta de gênero.
+        self.assertTrue(all(f.count("/") == 3 for f in files), files)
+
+    def test_online_mode_queries_with_cleaned_artist_and_title(self):
+        self.cfg.genre_source = "online"
+        FakeLookup.resposta = "Rock"
+        self._run()
+        artistas = {a for a, _ in FakeLookup.consultas}
+        self.assertEqual(artistas, {"Artista"}, FakeLookup.consultas)
 
     def test_metadata_mode_prefers_the_track_genre(self):
         self.cfg.genre_source = "metadata"

@@ -19,7 +19,7 @@ import re
 import threading
 import time
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -28,6 +28,7 @@ from yt_dlp.cookies import CookieLoadError, load_cookies
 from yt_dlp.utils import DownloadError, ExtractorError
 
 from .config import AppConfig
+from .genre import GenreLookup
 from .organizer import TrackTags, build_relative_path, resolve_tags, sanitize_component
 from .tools import (  # reexportados: a interface e os testes importam daqui
     describe_missing_ejs,
@@ -317,6 +318,7 @@ class DownloadEngine:
         self.allow_missing_js_runtime = allow_missing_js_runtime
         self._ffmpeg_path: Optional[str] = None
         self._playlist_genre: str = ""
+        self._genre_lookup: Optional[GenreLookup] = None
 
         self._stop = threading.Event()
         self._resume = threading.Event()
@@ -625,6 +627,8 @@ class DownloadEngine:
         if not info:
             raise RuntimeError("Metadados vazios.")
 
+        # A consulta online precisa de artista e título já limpos, então roda
+        # depois da primeira resolução e só substitui o gênero.
         tags = resolve_tags(
             info,
             self.cfg.default_genre,
@@ -632,6 +636,12 @@ class DownloadEngine:
             self.cfg.genre_source,
             self._playlist_genre,
         )
+        if self._genre_lookup is not None and not self._genre_lookup.disabled:
+            encontrado = self._genre_lookup.lookup(tags.artist, tags.title)
+            if encontrado:
+                tags = replace(tags, genre=encontrado)
+            else:
+                self._log("debug", f"Gênero não encontrado para {tags.artist} - {tags.title}")
         outtmpl = self._outtmpl_for(tags)
         self._log(
             "info",
@@ -758,6 +768,13 @@ class DownloadEngine:
         igual numa execução retomada, sem reextrair nada."""
         row = self.store.get_playlist()
         self._playlist_genre = (row["title"] if row else "") or ""
+        if self.cfg.genre_source == "online":
+            self._genre_lookup = GenreLookup(
+                self.store, group=self.cfg.group_subgenres, log=self._log
+            )
+            reserva = self._playlist_genre or self.cfg.default_genre
+            self._log("info", f'Gênero consultado na internet; reserva: "{reserva}".')
+            return
         if self.cfg.genre_source == "fixed":
             self._log("info", f"Gênero fixo: {self.cfg.default_genre}")
         elif self._playlist_genre:

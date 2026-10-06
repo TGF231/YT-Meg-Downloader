@@ -44,7 +44,9 @@ Issues = "https://github.com/TGF231/Pen-Drive-Maker/issues"
 pen-drive-maker = "pen_drive_maker.gui:main"
 
 [tool.setuptools]
-packages = ["pen_drive_maker"]
+# Lista explícita: um subpacote novo precisa ser acrescentado aqui, senão o
+# wheel sai sem ele e o programa instalado quebra no import.
+packages = ["pen_drive_maker", "pen_drive_maker.assinatura"]
 
 [tool.setuptools.dynamic]
 version = { attr = "pen_drive_maker.__version__" }

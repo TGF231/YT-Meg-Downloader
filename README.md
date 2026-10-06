@@ -106,6 +106,10 @@ brew install ffmpeg              # macOS
 3. Ajuste o intervalo entre downloads e, se quiser, informe cookies.
 4. **Iniciar / Retomar**.
 
+O que raramente muda — retentativas, backoff, metadados, caminho do ffmpeg —
+fica em *Ferramentas → Opções avançadas*. O botão *Tema escuro* alterna a
+aparência e a escolha fica salva.
+
 As configurações ficam salvas entre execuções (`QSettings`).
 
 ### Retomada
@@ -225,19 +229,28 @@ ferramenta **encerra de forma limpa** e explica no log como retomar.
 
 `<saída>/<Gênero>/<Artista>/<Álbum>/<NN - Título>.<ext>`
 
-- **Gênero** usa o **nome da playlist** por padrão. O YouTube Music quase nunca
-  preenche o campo de gênero, e quem monta uma playlist chamada "EDM" já
-  classificou as faixas. O seletor **Pasta de gênero** oferece três
-  comportamentos:
+- **Gênero** é consultado na internet por padrão. O YouTube Music não informa
+  gênero nenhum, então a ferramenta pergunta à busca pública do iTunes, que
+  responde sem exigir chave. O seletor **Pasta de gênero** oferece:
 
   | Opção | O que vira a pasta |
   |---|---|
-  | Nome da playlist (padrão) | O nome da playlist; metadados só se ela não tiver nome |
-  | Metadados da faixa | O gênero declarado na faixa; o nome da playlist como reserva |
-  | Sempre o texto abaixo | O **Gênero de reserva**, igual para tudo |
+  | Consultar na internet (padrão) | O gênero da base externa; metadados e nome da playlist como reserva |
+  | Nome da playlist | O nome da playlist — sua própria classificação, sem rede |
+  | Metadados da faixa | O gênero declarado na faixa, se houver |
+  | Sempre o gênero de reserva | Um texto fixo, igual para tudo |
 
-  Use *Metadados da faixa* quando a playlist misturar estilos e as faixas
-  tiverem gênero marcado; use *texto fixo* para juntar tudo numa pasta só.
+  As respostas ficam em cache no banco da fila, então uma execução retomada
+  não reconsulta nada. *Ferramentas → Limpar cache de gêneros* esquece tudo.
+
+  **Subgêneros são agrupados** por padrão: numa playlist de EDM, *Dance*,
+  *House* e *Electronic* viram `Eletronica`, em vez de três pastas para o que
+  o ouvinte trata como uma. Desligue em *Opções avançadas* para usar a
+  resposta crua.
+
+  Se a consulta falhar — sem internet, serviço fora —, a faixa cai na reserva
+  e o download segue. Depois de algumas falhas seguidas a consulta se desliga
+  sozinha pelo resto da execução.
 - **Artista** usa `album_artist` → `artists` → `artist` → canal, nessa ordem.
   O sufixo `- Topic` é removido e participações (`feat.`, `ft.`, `with`) vão
   para a pasta do artista principal. Nomes com `&` e vírgula são preservados
@@ -267,11 +280,15 @@ Metadados e capa são embutidos quando o formato de destino suporta.
 | `pen_drive_maker/config.py` | `AppConfig` e validação |
 | `pen_drive_maker/store.py` | Fila persistente em SQLite |
 | `pen_drive_maker/organizer.py` | Metadados → pastas, saneamento de nomes |
+| `pen_drive_maker/genre.py` | Consulta de gênero e cache |
+| `pen_drive_maker/assinatura/` | Assinatura visual (tema, janela, ações) |
 | `pen_drive_maker/tools.py` | Localização do ffmpeg e do runtime JavaScript |
 | `pen_drive_maker/downloader.py` | Motor: extração, ritmo, bloqueios, download |
 | `pen_drive_maker/gui.py` | Interface PySide6 |
 | `tests/test_engine.py` | Testes offline do motor (`yt-dlp` substituído) |
 | `tests/test_tools.py` | Testes da detecção de ferramentas externas |
+| `tests/test_genre.py` | Testes da consulta de gênero (sem rede) |
+| `tests/test_gui.py` | Testes da interface (Qt offscreen) |
 | `pyproject.toml` | Metadados do pacote e entry point `pen-drive-maker` |
 | `packaging.spec` | Receita do PyInstaller para o executável standalone |
 | `.github/workflows/release.yml` | Testes, build e publicação da release na tag |
