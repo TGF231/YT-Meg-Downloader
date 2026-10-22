@@ -29,7 +29,13 @@ from yt_dlp.utils import DownloadError, ExtractorError
 
 from .config import AppConfig
 from .genre import GenreLookup
-from .organizer import TrackTags, build_relative_path, resolve_tags, sanitize_component
+from .organizer import (
+    FOLDER_LEVELS,
+    TrackTags,
+    build_relative_path,
+    resolve_tags,
+    sanitize_component,
+)
 from .tools import (  # reexportados: a interface e os testes importam daqui
     describe_missing_ejs,
     describe_missing_ffmpeg,
@@ -828,13 +834,22 @@ class DownloadEngine:
                 # Guarda os nomes já saneados: é o que existe de fato no disco.
                 # Guarda os níveis que existem de fato: sem a pasta de álbum,
                 # o banco e a árvore da interface não devem inventá-la.
-                niveis = [
-                    sanitize_component(part, self.cfg.ascii_only, self.cfg.max_component_len)
-                    for part in tags.folder_parts(self.cfg.folder_structure)
-                ]
-                genre = niveis[0]
-                artist = niveis[1] if len(niveis) > 1 else ""
-                album = niveis[2] if len(niveis) > 2 else ""
+                # Cada nível vai para a sua coluna, qualquer que seja a
+                # estrutura: a árvore da interface lê por nome, não por posição.
+                nomes = FOLDER_LEVELS.get(
+                    self.cfg.folder_structure, FOLDER_LEVELS["genre_artist_album"]
+                )
+                valores = {
+                    nome: sanitize_component(
+                        parte, self.cfg.ascii_only, self.cfg.max_component_len
+                    )
+                    for nome, parte in zip(
+                        nomes, tags.folder_parts(self.cfg.folder_structure)
+                    )
+                }
+                genre = valores.get("genre", "")
+                artist = valores.get("artist", "")
+                album = valores.get("album", "")
                 self.store.mark_done(item.video_id, path, genre, artist, album, tags.title)
                 self._log(
                     "ok",

@@ -102,7 +102,9 @@ class AppConfig:
             self.cookies_mode = "none"
         if self.genre_source not in ("online", "playlist", "metadata", "fixed"):
             self.genre_source = "online"
-        if self.folder_structure not in ("genre_artist_album", "genre_artist", "genre"):
+        if self.folder_structure not in (
+            "genre_artist_album", "genre_artist", "genre", "artist", "album"
+        ):
             self.folder_structure = "genre_artist_album"
 
     def validate(self) -> list[str]:

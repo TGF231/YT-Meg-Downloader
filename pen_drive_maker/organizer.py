@@ -35,12 +35,23 @@ _FEATURING = re.compile(
 )
 
 
-# Quantos níveis de pasta criar. O que sai da pasta entra no nome do arquivo,
-# para a faixa continuar identificável e a ordenação continuar fazendo sentido.
+# Quais níveis de pasta criar, sempre nesta ordem: gênero, artista, álbum.
+# O que sai da pasta entra no nome do arquivo, para a faixa continuar
+# identificável e a ordenação continuar fazendo sentido.
 FOLDER_GENRE_ARTIST_ALBUM = "genre_artist_album"   # EDM/Avicii/True/02 - Wake Me Up
 FOLDER_GENRE_ARTIST = "genre_artist"               # EDM/Avicii/Wake Me Up
 FOLDER_GENRE = "genre"                             # EDM/Avicii - Wake Me Up
-FOLDER_STRUCTURES = (FOLDER_GENRE_ARTIST_ALBUM, FOLDER_GENRE_ARTIST, FOLDER_GENRE)
+FOLDER_ARTIST = "artist"                           # Avicii/Wake Me Up
+FOLDER_ALBUM = "album"                             # True/02 - Avicii - Wake Me Up
+
+FOLDER_LEVELS = {
+    FOLDER_GENRE_ARTIST_ALBUM: ("genre", "artist", "album"),
+    FOLDER_GENRE_ARTIST: ("genre", "artist"),
+    FOLDER_GENRE: ("genre",),
+    FOLDER_ARTIST: ("artist",),
+    FOLDER_ALBUM: ("album",),
+}
+FOLDER_STRUCTURES = tuple(FOLDER_LEVELS)
 
 
 # De onde sai o nome da pasta de gênero.
@@ -59,28 +70,35 @@ class TrackTags:
     title: str
     track_number: Optional[int] = None
 
+    def level_values(self) -> dict:
+        return {"genre": self.genre, "artist": self.artist, "album": self.album}
+
     def folder_parts(self, structure: str = FOLDER_GENRE_ARTIST_ALBUM) -> list[str]:
         """Níveis de pasta. O que sai daqui vai para o nome do arquivo."""
-        if structure == FOLDER_GENRE:
-            return [self.genre]
-        if structure == FOLDER_GENRE_ARTIST:
-            return [self.genre, self.artist]
-        return [self.genre, self.artist, self.album]
+        valores = self.level_values()
+        niveis = FOLDER_LEVELS.get(structure, FOLDER_LEVELS[FOLDER_GENRE_ARTIST_ALBUM])
+        return [valores[n] for n in niveis]
 
     def file_stem(self, structure: str = FOLDER_GENRE_ARTIST_ALBUM) -> str:
         """Nome do arquivo, sem extensão, antes do saneamento.
 
-        Com a pasta de álbum, o número da faixa ordena dentro dele. Sem ela, o
-        número só embaralharia faixas de álbuns diferentes, então sai; e sem a
-        pasta de artista, o artista entra no nome para a faixa não ficar órfã.
+        Duas regras, nesta ordem:
+
+        - o número da faixa só aparece quando há pasta de álbum, porque fora
+          dela ele não ordena nada — só intercala faixas de discos diferentes;
+        - o artista entra no nome quando não houver pasta dele, senão a faixa
+          fica órfã no meio de centenas de outras.
+
+        O gênero nunca entra no nome: ele classifica, não identifica.
         """
-        if structure == FOLDER_GENRE:
-            return f"{self.artist} - {self.title}" if self.artist else self.title
-        if structure == FOLDER_GENRE_ARTIST:
-            return self.title
-        if self.track_number:
-            return f"{self.track_number:02d} - {self.title}"
-        return self.title
+        niveis = FOLDER_LEVELS.get(structure, FOLDER_LEVELS[FOLDER_GENRE_ARTIST_ALBUM])
+        partes = []
+        if "album" in niveis and self.track_number:
+            partes.append(f"{self.track_number:02d}")
+        if "artist" not in niveis and self.artist:
+            partes.append(self.artist)
+        partes.append(self.title)
+        return " - ".join(partes)
 
 
 def strip_accents(text: str) -> str:

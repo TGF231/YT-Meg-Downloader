@@ -112,17 +112,34 @@ class JanelaTest(unittest.TestCase):
             self.assertEqual(self.w._genero_de_exemplo(), esperado, fonte)
 
     def test_folder_structure_selector_changes_the_preview(self):
+        from pen_drive_maker.organizer import FOLDER_STRUCTURES
+
         vistos = {}
-        for estrutura in ("genre_artist_album", "genre_artist", "genre"):
+        for estrutura in FOLDER_STRUCTURES:
             self.w._selecionar(self.w.folder_structure, estrutura)
             vistos[estrutura] = self.w.estrutura.text()
-        self.assertEqual(len(set(vistos.values())), 3, vistos)
+        self.assertEqual(
+            len(set(vistos.values())), len(FOLDER_STRUCTURES),
+            f"duas opções com o mesmo resultado: {vistos}",
+        )
         self.assertIn("Album", vistos["genre_artist_album"])
         self.assertNotIn("Album", vistos["genre_artist"])
         self.assertIn("Artista - Titulo", vistos["genre"])
+        self.assertIn("01 - Artista - Titulo", vistos["album"])
+
+    def test_the_selector_offers_every_structure(self):
+        from pen_drive_maker.organizer import FOLDER_STRUCTURES
+
+        oferecidas = {
+            self.w.folder_structure.itemData(i)
+            for i in range(self.w.folder_structure.count())
+        }
+        self.assertEqual(oferecidas, set(FOLDER_STRUCTURES))
 
     def test_folder_structure_reaches_the_config(self):
-        for estrutura in ("genre_artist_album", "genre_artist", "genre"):
+        from pen_drive_maker.organizer import FOLDER_STRUCTURES
+
+        for estrutura in FOLDER_STRUCTURES:
             self.w._selecionar(self.w.folder_structure, estrutura)
             self.assertEqual(self.w.config_atual().folder_structure, estrutura)
 

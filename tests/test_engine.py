@@ -395,6 +395,8 @@ class PreviewPathTest(unittest.TestCase):
             "genre_artist_album": "/x/EDM/Artista/Album/01 - Titulo.ext",
             "genre_artist": "/x/EDM/Artista/Titulo.ext",
             "genre": "/x/EDM/Artista - Titulo.ext",
+            "artist": "/x/Artista/Titulo.ext",
+            "album": "/x/Album/01 - Artista - Titulo.ext",
         }
         for estrutura, caminho in esperado.items():
             self.assertEqual(
@@ -551,6 +553,49 @@ class EngineFlowTest(unittest.TestCase):
         files = sorted(p.relative_to(self.tmp).as_posix() for p in pathlib.Path(self.tmp).rglob("*.m4a"))
         self.assertIn("Playlist de Teste/Artista - Musica 1.m4a", files)
         self.assertTrue(all(f.count("/") == 1 for f in files), files)
+
+    def test_artist_only_structure(self):
+        self.cfg.folder_structure = "artist"
+        self._run()
+        files = sorted(p.relative_to(self.tmp).as_posix() for p in pathlib.Path(self.tmp).rglob("*.m4a"))
+        self.assertIn("Artista/Musica 1.m4a", files)
+        self.assertTrue(all(f.count("/") == 1 for f in files), files)
+
+    def test_album_only_structure_keeps_number_and_artist(self):
+        self.cfg.folder_structure = "album"
+        self._run()
+        files = sorted(p.relative_to(self.tmp).as_posix() for p in pathlib.Path(self.tmp).rglob("*.m4a"))
+        self.assertIn("Album/01 - Artista - Musica 1.m4a", files)
+        self.assertTrue(all(f.count("/") == 1 for f in files), files)
+
+    def test_each_level_lands_in_its_own_column(self):
+        """A coluna não pode depender da posição, senão a árvore mente."""
+        casos = {
+            "artist": ("", "Artista", ""),
+            "album": ("", "", "Album"),
+            "genre": ("Playlist de Teste", "", ""),
+        }
+        for estrutura, esperado in casos.items():
+            with self.subTest(estrutura=estrutura):
+                # Fila própria por caso; reentrar no setUp empilharia dublês.
+                destino = tempfile.mkdtemp()
+                cfg = AppConfig(
+                    playlist_url=self.cfg.playlist_url,
+                    output_dir=destino,
+                    min_interval=0.0,
+                    jitter=0.0,
+                    genre_source="playlist",
+                    embed_thumbnail=False,
+                    folder_structure=estrutura,
+                )
+                cfg.normalize()
+                store = QueueStore(cfg.db_path())
+                try:
+                    DownloadEngine(cfg, store, EngineCallbacks()).run()
+                    linhas = {(g, a, al) for g, a, al, _n in store.done_tree()}
+                    self.assertEqual(linhas, {esperado}, estrutura)
+                finally:
+                    store.close()
 
     def test_levels_that_do_not_exist_are_not_recorded(self):
         """A árvore da interface não pode mostrar pasta que não está no disco."""

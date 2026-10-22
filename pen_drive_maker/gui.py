@@ -301,6 +301,8 @@ class MainWindow(JanelaBase):
         self.folder_structure.addItem("Gênero / Artista / Álbum", "genre_artist_album")
         self.folder_structure.addItem("Gênero / Artista", "genre_artist")
         self.folder_structure.addItem("Somente gênero", "genre")
+        self.folder_structure.addItem("Somente artista", "artist")
+        self.folder_structure.addItem("Somente álbum", "album")
         self.folder_structure.setToolTip(
             "Artista e álbum continuam gravados na tag do arquivo em qualquer "
             "opção. O que sai da pasta entra no nome: sem a pasta de álbum o "
@@ -769,8 +771,9 @@ class MainWindow(JanelaBase):
         if self.store is None:
             return
         for genero, artista, album, quantidade in self.store.done_tree():
-            # Artista e álbum vêm vazios quando as pastas deles estão desligadas.
-            niveis = [genero or "?"] + [p for p in (artista, album) if p]
+            # Cada nível desligado vem vazio; a ordem gravada é sempre
+            # gênero, artista, álbum.
+            niveis = [p for p in (genero, artista, album) if p] or ["?"]
             self._acrescentar_na_arvore(niveis, quantidade)
 
     @Slot(str)

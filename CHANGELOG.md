@@ -3,23 +3,30 @@
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o
 versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
-## [1.4.0] - 2026-10-22
+## [1.5.0] - 2026-10-22
 
 ### Adicionado
 
-- Seletor **Estrutura de pastas**: `Gênero / Artista / Álbum` (padrão) ou
-  `Gênero / Artista`. O álbum continua gravado na tag do arquivo nos dois
-  casos — a pasta é só uma forma de separar, e menos níveis significam menos
-  navegação no rádio do carro.
-- Desempate de nomes repetidos. Com um nível a menos, duas faixas do mesmo
-  artista com o mesmo título cairiam no mesmo arquivo: a segunda seria pulada
-  como "já baixada" e sumiria em silêncio. Agora ela recebe o id do vídeo no
-  nome, com aviso no log.
+- Duas estruturas de pasta a mais: **Somente artista** e **Somente álbum**.
+  As cinco opções saem agora de uma tabela única de níveis, em vez de casos
+  escritos um a um.
+
+  | Opção | Resultado |
+  |---|---|
+  | Gênero / Artista / Álbum (padrão) | `EDM/Avicii/True/02 - Wake Me Up.mp3` |
+  | Gênero / Artista | `EDM/Avicii/Wake Me Up.mp3` |
+  | Somente gênero | `EDM/Avicii - Wake Me Up.mp3` |
+  | Somente artista | `Avicii/Wake Me Up.mp3` |
+  | Somente álbum | `True/02 - Avicii - Wake Me Up.mp3` |
+
+- Cada nível passa a ser gravado na sua própria coluna do banco, em vez de por
+  posição: sem isso a árvore da interface mostraria um artista na coluna de
+  gênero quando a estrutura fosse "somente artista".
 
 ### Corrigido
 
-- A árvore da interface mostrava um nível de álbum que não existia no disco
-  quando a pasta estava desligada.
+- As notas da 1.4.0 saíram com a seção duplicada, por uma entrada repetida
+  neste arquivo.
 
 ## [1.4.0] - 2026-10-22
 
@@ -34,10 +41,14 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
   | Gênero / Artista / Álbum (padrão) | `EDM/Avicii/True/02 - Wake Me Up.mp3` |
   | Gênero / Artista | `EDM/Avicii/Wake Me Up.mp3` |
   | Somente gênero | `EDM/Avicii - Wake Me Up.mp3` |
+  | Somente artista | `Avicii/Wake Me Up.mp3` |
+  | Somente álbum | `True/02 - Avicii - Wake Me Up.mp3` |
 
-  Artista e álbum continuam gravados na tag do arquivo em qualquer opção. O
-  número da faixa sai junto com a pasta de álbum, porque fora dela ele só
-  embaralharia faixas de álbuns diferentes.
+  Gênero, artista e álbum continuam gravados na tag do arquivo em qualquer
+  opção. Duas regras governam o nome: o número da faixa só aparece quando há
+  pasta de álbum, porque fora dela ele não ordena nada; e o artista entra no
+  nome quando não houver pasta dele. O gênero nunca entra — ele classifica,
+  não identifica.
 - Desempate de nomes repetidos. Com menos pastas, duas faixas do mesmo artista
   com o mesmo título cairiam no mesmo arquivo: a segunda seria pulada como "já
   baixada" e sumiria em silêncio. Agora recebe o id do vídeo no nome, com
@@ -239,7 +250,9 @@ Primeira versão.
 - Interface PySide6 com contadores, barras de progresso, log colorido, árvore
   da estrutura de pastas criada e controles de pausar, retomar e parar.
 
+[1.5.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.5.0
 [1.4.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.4.0
+[1.5.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.5.0
 [1.4.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.4.0
 [1.3.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.3.0
 [1.2.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.2.0

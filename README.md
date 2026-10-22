@@ -236,11 +236,19 @@ O seletor **Estrutura de pastas** controla a profundidade:
 | Gênero / Artista / Álbum (padrão) | `EDM/Avicii/True/02 - Wake Me Up.mp3` |
 | Gênero / Artista | `EDM/Avicii/Wake Me Up.mp3` |
 | Somente gênero | `EDM/Avicii - Wake Me Up.mp3` |
+| Somente artista | `Avicii/Wake Me Up.mp3` |
+| Somente álbum | `True/02 - Avicii - Wake Me Up.mp3` |
 
-O que sai da pasta entra no nome do arquivo: sem a pasta de álbum o número da
-faixa sai — fora do álbum ele só embaralharia faixas de discos diferentes —, e
-sem a pasta de artista o nome dele entra no arquivo. Artista e álbum seguem
-gravados na tag em qualquer opção, então o rádio continua mostrando-os.
+O que sai da pasta entra no nome do arquivo, por duas regras:
+
+- **o número da faixa só aparece quando há pasta de álbum** — fora dela ele não
+  ordena nada, só intercala faixas de discos diferentes;
+- **o artista entra no nome quando não houver pasta dele** — senão a faixa fica
+  órfã no meio de centenas de outras.
+
+O gênero nunca entra no nome: ele classifica, não identifica. Gênero, artista e
+álbum seguem gravados na tag em qualquer opção, então o rádio continua
+mostrando-os.
 
 Com menos pastas cresce a chance de dois títulos iguais do mesmo artista
 gerarem o mesmo nome; nesse caso a segunda faixa recebe o id do vídeo no nome,
