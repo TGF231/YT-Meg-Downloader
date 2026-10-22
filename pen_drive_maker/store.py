@@ -7,6 +7,7 @@ seja retomada sem reextrair a playlist nem rebaixar o que já foi salvo.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -49,6 +50,33 @@ CREATE TABLE IF NOT EXISTS genre_cache (
     fetched_at TEXT
 );
 """
+
+
+# Arquivos que aparecem ao lado do áudio durante o download e não contam como ele.
+_NOT_AUDIO = {".part", ".ytdl", ".temp", ".tmp", ".jpg", ".jpeg", ".png", ".webp", ".json"}
+
+
+def file_present(filepath: str) -> bool:
+    """O arquivo baixado ainda existe no disco?
+
+    Aceita também outra extensão com o mesmo nome: se o yt-dlp gravou o
+    caminho antes da conversão (.webm) e o arquivo final é .mp3, a faixa está
+    no disco do mesmo jeito, e marcá-la como ausente a baixaria de novo.
+    """
+    try:
+        if os.path.isfile(filepath):
+            return True
+        pasta, nome = os.path.split(filepath)
+        base = os.path.splitext(nome)[0]
+        if not base or not os.path.isdir(pasta):
+            return False
+        for entrada in os.listdir(pasta):
+            raiz, extensao = os.path.splitext(entrada)
+            if raiz == base and extensao.lower() not in _NOT_AUDIO:
+                return True
+    except OSError:
+        return False
+    return False
 
 
 def _now() -> str:
@@ -251,6 +279,40 @@ class QueueStore:
             )
             self._conn.commit()
         return attempts
+
+    def verify_files(self) -> List[QueueItem]:
+        """Devolve à fila as faixas 'baixadas' cujo arquivo sumiu do disco.
+
+        O banco só sabe o que o programa fez, não o que aconteceu depois: se
+        você apagar ou mover as pastas, ele continua achando que está tudo
+        pronto. Faixas sem caminho gravado são mantidas, porque não há como
+        provar que sumiram.
+
+        Quem chama deve garantir que a pasta de saída está acessível: com o
+        pen drive desconectado, todo arquivo pareceria ausente.
+        """
+        with self._lock:
+            baixadas = self._conn.execute(
+                "SELECT * FROM items WHERE status = ? AND filepath IS NOT NULL "
+                "AND filepath != ''",
+                (STATUS_DONE,),
+            ).fetchall()
+
+        # A checagem de disco fica fora do lock: milhares de arquivos numa
+        # unidade lenta não devem travar a interface que também usa o banco.
+        sumidas = [row for row in baixadas if not file_present(row["filepath"])]
+        if not sumidas:
+            return []
+
+        with self._lock:
+            self._conn.executemany(
+                "UPDATE items SET status = ?, attempts = 0, last_error = NULL, "
+                "filepath = NULL, genre = NULL, artist = NULL, album = NULL, "
+                "updated_at = ? WHERE video_id = ?",
+                [(STATUS_PENDING, _now(), row["video_id"]) for row in sumidas],
+            )
+            self._conn.commit()
+        return [self._row_to_item(row) for row in sumidas]
 
     def requeue_failed(self) -> int:
         with self._lock:

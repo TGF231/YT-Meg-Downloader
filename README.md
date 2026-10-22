@@ -112,6 +112,25 @@ aparência e a escolha fica salva.
 
 As configurações ficam salvas entre execuções (`QSettings`).
 
+### O que cada botão da fila faz
+
+| Botão | O que faz | Apaga arquivos? |
+|---|---|---|
+| **Iniciar / Retomar** | Continua a fila. Antes, confere se os arquivos já baixados ainda existem | Não |
+| **Verificar arquivos** | Faixas marcadas como baixadas cujo arquivo foi apagado ou movido voltam para a fila | Não |
+| *Menu → Fila →* **Tentar de novo as que falharam** | Devolve à fila as faixas que esgotaram as tentativas | Não |
+| *Menu → Fila →* **Atualizar lista da playlist** | Busca a playlist de novo e acrescenta músicas novas; não remove nem rebaixa nada | Não |
+| *Menu → Fila →* **Limpar fila e histórico…** | Esquece tudo para recomeçar do zero; a próxima execução rebusca a playlist | Não |
+
+**Apaguei as pastas, e agora?** Clique em **Iniciar**: ele nota que os arquivos
+sumiram e baixa de novo só o que falta. **Mudei a estrutura de pastas e quero
+tudo na estrutura nova?** Use *Limpar fila e histórico…* e depois **Iniciar**.
+Os arquivos antigos continuam onde estão, então apague as pastas antigas à mão
+para não ficar com duplicatas.
+
+Com a pasta de saída num pen drive, a conferência só roda se a pasta existir:
+desconectado, o programa avisa em vez de achar que você apagou tudo.
+
 ### Retomada
 
 A fila fica em `<saída>/.pen-drive-maker/queue.db` (SQLite). Fechar o programa,

@@ -199,15 +199,20 @@ class OpcoesAvancadas(QDialog):
 class MainWindow(JanelaBase):
     APP_NOME = APP_NOME
     APP_VERSAO = __version__
-    ROTULO_MENUS = "Ferramentas"
-    MENUS = (("ferramentas", "Ferramentas"),)
+    ROTULO_MENUS = "Menu"
+    MENUS = (("fila", "Fila"), ("ferramentas", "Ferramentas"))
     ACOES = (
         Acao("act_iniciar", "Iniciar / Retomar", "iniciar", quando="parado", onde=BARRA),
         Acao("act_pausar", "Pausar", "alternar_pausa", quando="rodando", onde=BARRA),
         Acao("act_parar", "Parar", "parar", quando="rodando", onde=BARRA),
-        Acao("act_requeue", "Reenfileirar falhas", "reenfileirar", quando="parado",
+        Acao("act_verificar", "Verificar arquivos", "verificar_arquivos", quando="parado",
              onde=BARRA, separador=True),
-        Acao("act_reextrair", "Reextrair playlist", "reextrair", quando="parado", onde=BARRA),
+        Acao("act_requeue", "Tentar de novo as que falharam", "reenfileirar",
+             quando="parado", onde="fila"),
+        Acao("act_reextrair", "Atualizar lista da playlist", "reextrair", quando="parado",
+             onde="fila"),
+        Acao("act_limpar_fila", "Limpar fila e histórico…", "limpar_fila", quando="parado",
+             onde="fila", separador=True),
         Acao("act_opcoes", "Opções avançadas…", "abrir_opcoes", quando="parado",
              onde="ferramentas"),
         Acao("act_testar", "Testar ferramentas externas", "testar_ferramentas",
@@ -227,9 +232,37 @@ class MainWindow(JanelaBase):
         self._rodando = False
         super().__init__()
         self._conectar_bridge()
+        self._explicar_acoes()
         self._carregar_preferencias()
         self.carregar_tema_salvo()
         self.testar_ferramentas()
+        self._carregar_estado_anterior()
+
+    DICAS = {
+        "act_iniciar": "Começa ou continua a fila. Faixas já baixadas são puladas.",
+        "act_verificar": (
+            "Compara a fila com a pasta de saída: faixas marcadas como baixadas "
+            "cujo arquivo foi apagado ou movido voltam para a fila."
+        ),
+        "act_requeue": (
+            "Devolve à fila as faixas que falharam todas as tentativas, para "
+            "tentar baixá-las de novo."
+        ),
+        "act_reextrair": (
+            "Busca a playlist de novo no YouTube e acrescenta as músicas novas. "
+            "Não apaga nada e não rebaixa o que já está pronto."
+        ),
+        "act_limpar_fila": (
+            "Esquece a playlist, a fila e o histórico, para recomeçar do zero. "
+            "Não apaga nenhum arquivo do disco."
+        ),
+    }
+
+    def _explicar_acoes(self) -> None:
+        for atributo, texto in self.DICAS.items():
+            acao = getattr(self, atributo)
+            acao.setToolTip(texto)
+            acao.setStatusTip(texto)
 
     # ----------------------------------------------------------- conteúdo
 
@@ -329,6 +362,9 @@ class MainWindow(JanelaBase):
         )
         direita.addRow("Intervalo entre downloads:", self.min_interval)
         self.estrutura = QLabel()
+        # Digitar ou colar a pasta também precisa atualizar o exemplo, não só o
+        # botão "Escolher...".
+        self.output_edit.textChanged.connect(self._atualizar_estrutura)
         definir_papel(self.estrutura, "mono")
         self.estrutura.setWordWrap(True)
         direita.addRow("Destino:", self.estrutura)
@@ -453,12 +489,21 @@ class MainWindow(JanelaBase):
         if problemas:
             QMessageBox.warning(self, "Configuração incompleta", "\n".join(problemas))
             return
+        raiz = Path(cfg.output_dir).expanduser()
+        # Anotar antes do mkdir: criar a pasta de uma unidade ausente "cura" a
+        # ausência e esconderia que o pen drive não está conectado.
+        raiz_existia = raiz.is_dir()
         try:
-            Path(cfg.output_dir).expanduser().mkdir(parents=True, exist_ok=True)
+            raiz.mkdir(parents=True, exist_ok=True)
             store = self._abrir_store(cfg)
         except OSError as erro:
             QMessageBox.critical(self, "Erro", f"Não foi possível usar o diretório:\n{erro}")
             return
+        if self._conferir_disco(store, cfg, raiz_existia) < 0 and store.stats().done:
+            self.registrar(
+                "warn",
+                "A pasta de saída não existia: não conferi os arquivos já baixados.",
+            )
 
         self._salvar_preferencias()
         permitir_sem_runtime = self._confirmar_runtime()
@@ -504,6 +549,46 @@ class MainWindow(JanelaBase):
         quantidade = store.requeue_failed()
         self.registrar("info", f"{quantidade} faixa(s) com falha voltaram para a fila.")
         self._ao_stats(store.stats())
+
+    def verificar_arquivos(self) -> None:
+        """Faixas baixadas cujo arquivo sumiu voltam para a fila."""
+        store = self._store_para_leitura()
+        if store is None:
+            return
+        cfg = self.config_atual()
+        quantidade = self._conferir_disco(store, cfg, True)
+        if quantidade < 0:
+            QMessageBox.warning(
+                self, "Pasta de saída não encontrada",
+                "A pasta de saída não existe agora, então não dá para conferir os "
+                "arquivos. Se ela fica num pen drive, conecte-o e tente de novo.",
+            )
+        elif quantidade == 0:
+            self.registrar("ok", "Todos os arquivos baixados estão no disco.")
+
+    def limpar_fila(self) -> None:
+        """Recomeça do zero: esquece a playlist, a fila e o histórico."""
+        cfg = self.config_atual()
+        if not cfg.output_dir.strip() or not cfg.db_path().exists():
+            QMessageBox.information(self, "Fila", "Não há fila nem histórico para limpar.")
+            return
+        if not self._perguntar(
+            "Limpar fila e histórico",
+            "Esquecer a playlist, a fila e o histórico desta pasta?",
+            "Nenhum arquivo é apagado do disco.\n\n"
+            "Na próxima vez que clicar em Iniciar, a playlist é buscada de novo e "
+            "todas as faixas são baixadas outra vez, já com a estrutura de pastas "
+            "escolhida agora. Os arquivos antigos continuam onde estão: apague as "
+            "pastas antigas à mão para não ficar com duplicatas.",
+            "Limpar fila e histórico",
+        ):
+            return
+        store = self._abrir_store(cfg)
+        store.clear_all()
+        self._remontar_arvore()
+        self._ao_stats(store.stats())
+        self._atualizar_estrutura()
+        self.registrar("info", "Fila e histórico limpos. Clique em Iniciar para recomeçar.")
 
     def limpar_cache_generos(self) -> None:
         store = self._store_para_leitura()
@@ -656,9 +741,41 @@ class MainWindow(JanelaBase):
             )
         )
 
+    def _conferir_disco(self, store: QueueStore, cfg: AppConfig, raiz_existe: bool) -> int:
+        """Devolve à fila o que sumiu do disco. -1 se a pasta de saída não existe.
+
+        Sem esta conferência o banco continua dizendo "baixada" para o que foi
+        apagado, e a árvore, lida do banco, mostra pastas que já não existem.
+        """
+        if not raiz_existe:
+            return -1
+        voltaram = store.verify_files()
+        if voltaram:
+            self.registrar(
+                "warn",
+                f"{len(voltaram)} faixa(s) estavam marcadas como baixadas, mas o "
+                "arquivo não está mais no disco. Voltaram para a fila.",
+            )
+        self._remontar_arvore()
+        self._ao_stats(store.stats())
+        return len(voltaram)
+
+    def _carregar_estado_anterior(self) -> None:
+        """Ao abrir, mostra a fila da sessão anterior já conferida com o disco."""
+        cfg = self.config_atual()
+        if not cfg.output_dir.strip() or not cfg.db_path().exists():
+            return
+        try:
+            store = self._abrir_store(cfg)
+        except OSError:
+            return
+        raiz = Path(cfg.output_dir).expanduser()
+        self._conferir_disco(store, cfg, raiz.is_dir())
+
     def _abrir_store(self, cfg: AppConfig) -> QueueStore:
         caminho = cfg.db_path()
-        if self.store is not None and self.store.db_path == caminho:
+        # O arquivo pode ter sido apagado por fora com o banco ainda aberto aqui.
+        if self.store is not None and self.store.db_path == caminho and caminho.exists():
             return self.store
         if self.store is not None:
             self.store.close()

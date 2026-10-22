@@ -499,6 +499,28 @@ class DownloadEngine:
 
     # ------------------------------------------------------------- extração
 
+    def sync_with_disk(self, root_existed: bool = True) -> int:
+        """Faixas marcadas como baixadas mas ausentes no disco voltam para a fila."""
+        if not root_existed:
+            if self.store.stats().done:
+                self._log(
+                    "warn",
+                    "A pasta de saída não existia: não conferi os arquivos já baixados. "
+                    "Se ela fica num pen drive, conecte-o e abra de novo.",
+                )
+            return 0
+        voltaram = self.store.verify_files()
+        if voltaram:
+            self._log(
+                "warn",
+                f"{len(voltaram)} faixa(s) estavam marcadas como baixadas, mas o "
+                "arquivo não está mais no disco. Voltaram para a fila.",
+            )
+            for item in voltaram[:5]:
+                self._log("debug", f"  de volta: {item.title or item.video_id}")
+            self._emit_stats()
+        return len(voltaram)
+
     def _verify_environment(self) -> None:
         runtime = find_js_runtime()
         if runtime is None:
@@ -729,7 +751,12 @@ class DownloadEngine:
     def run(self, force_reextract: bool = False) -> None:
         reason = "Concluído"
         try:
-            Path(self.cfg.output_dir).expanduser().mkdir(parents=True, exist_ok=True)
+            raiz = Path(self.cfg.output_dir).expanduser()
+            # Anotar antes do mkdir: criar a pasta de uma unidade ausente "cura"
+            # a ausência e esconderia que o pen drive não está conectado.
+            raiz_existia = raiz.is_dir()
+            raiz.mkdir(parents=True, exist_ok=True)
+            self.sync_with_disk(raiz_existia)
             self._verify_environment()
             self._verify_cookies()
             self._extract_playlist(force=force_reextract)

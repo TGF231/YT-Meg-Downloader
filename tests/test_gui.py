@@ -136,12 +136,120 @@ class JanelaTest(unittest.TestCase):
         }
         self.assertEqual(oferecidas, set(FOLDER_STRUCTURES))
 
+    def test_typing_the_output_folder_updates_the_preview(self):
+        self.w.output_edit.setText("/media/MEU_PENDRIVE")
+        self.assertIn("MEU_PENDRIVE", self.w.estrutura.text())
+        self.w.output_edit.setText("/outra/pasta")
+        self.assertIn("outra", self.w.estrutura.text())
+        self.assertNotIn("MEU_PENDRIVE", self.w.estrutura.text())
+
     def test_folder_structure_reaches_the_config(self):
         from pen_drive_maker.organizer import FOLDER_STRUCTURES
 
         for estrutura in FOLDER_STRUCTURES:
             self.w._selecionar(self.w.folder_structure, estrutura)
             self.assertEqual(self.w.config_atual().folder_structure, estrutura)
+
+    # ---- fila x disco ---------------------------------------------------
+
+    def _fila_com_arquivos(self, quantidade=3):
+        """Fila já baixada, com arquivos de verdade no disco."""
+        from pen_drive_maker.store import QueueStore
+
+        raiz = pathlib.Path(self.w.output_edit.text())
+        cfg = self.w.config_atual()
+        banco = QueueStore(cfg.db_path())
+        arquivos = []
+        for i in range(quantidade):
+            caminho = raiz / "EDM" / "Artista" / f"m{i}.mp3"
+            caminho.parent.mkdir(parents=True, exist_ok=True)
+            caminho.write_bytes(b"x")
+            arquivos.append(caminho)
+            banco.add_items([{"video_id": f"v{i}", "url": f"https://x/v{i}", "title": f"M{i}"}])
+            banco.mark_done(f"v{i}", str(caminho), "EDM", "Artista", "", f"M{i}")
+        banco.set_playlist("https://x/y", "EDM")
+        banco.close()
+        return raiz, arquivos
+
+    def test_verify_requeues_deleted_files_and_clears_the_tree(self):
+        """O caso relatado: apagar as pastas e a árvore continuar mostrando-as."""
+        import shutil
+
+        raiz, _ = self._fila_com_arquivos()
+        self.w._carregar_estado_anterior()
+        self.assertEqual(self.w.tree.topLevelItemCount(), 1, "a árvore deveria mostrar EDM")
+
+        shutil.rmtree(raiz / "EDM")
+        self.w.verificar_arquivos()
+
+        self.assertEqual(self.w.tree.topLevelItemCount(), 0, "a pasta apagada continua na árvore")
+        self.assertEqual(self.w.store.stats().pending, 3)
+        self.assertIn("Voltaram para a fila", self.w.log_view.toPlainText())
+
+    def test_verify_reports_when_everything_is_in_place(self):
+        self._fila_com_arquivos()
+        self.w.verificar_arquivos()
+        self.assertIn("estão no disco", self.w.log_view.toPlainText())
+
+    def test_opening_the_program_shows_the_previous_queue_checked_against_disk(self):
+        import shutil
+
+        raiz, _ = self._fila_com_arquivos()
+        shutil.rmtree(raiz / "EDM")
+        self.w._carregar_estado_anterior()
+        self.assertEqual(self.w.tree.topLevelItemCount(), 0)
+        self.assertIn("Total: 3", self.w.contadores.text())
+        self.assertIn("Na fila: 3", self.w.contadores.text())
+
+    def test_reset_clears_queue_history_and_tree_but_keeps_the_files(self):
+        raiz, arquivos = self._fila_com_arquivos()
+        self.w._carregar_estado_anterior()
+        self.w._perguntar = lambda *a, **k: True
+
+        self.w.limpar_fila()
+
+        self.assertEqual(self.w.store.stats().total, 0)
+        self.assertEqual(self.w.tree.topLevelItemCount(), 0)
+        self.assertIn("Total: 0", self.w.contadores.text())
+        self.assertTrue(all(a.exists() for a in arquivos), "nenhum arquivo pode ser apagado")
+
+    def test_reset_can_be_cancelled(self):
+        self._fila_com_arquivos()
+        self.w._carregar_estado_anterior()
+        self.w._perguntar = lambda *a, **k: False
+        self.w.limpar_fila()
+        self.assertEqual(self.w.store.stats().done, 3)
+        self.assertEqual(self.w.tree.topLevelItemCount(), 1)
+
+    def test_reset_explains_that_files_are_kept(self):
+        """A confirmação tem de dizer o que acontece, antes de o usuário aceitar."""
+        self._fila_com_arquivos()
+        mostrado = {}
+
+        def espiao(titulo, texto, detalhe, seguir):
+            mostrado.update(titulo=titulo, texto=texto, detalhe=detalhe)
+            return False
+
+        self.w._perguntar = espiao
+        self.w.limpar_fila()
+        self.assertIn("Nenhum arquivo é apagado", mostrado["detalhe"])
+        self.assertIn("baixadas outra vez", mostrado["detalhe"])
+
+    def test_every_queue_action_explains_itself(self):
+        for atributo in ("act_verificar", "act_requeue", "act_reextrair", "act_limpar_fila"):
+            acao = getattr(self.w, atributo)
+            self.assertTrue(len(acao.toolTip()) > 30, f"{atributo} sem explicação")
+
+    def test_a_store_deleted_behind_our_back_is_reopened(self):
+        self._fila_com_arquivos()
+        cfg = self.w.config_atual()
+        self.w._abrir_store(cfg)
+        self.w.store.close()
+        cfg.db_path().unlink()
+        for extra in cfg.db_path().parent.glob("queue.db-*"):
+            extra.unlink()
+        novo = self.w._abrir_store(cfg)
+        self.assertEqual(novo.stats().total, 0)
 
     def test_log_is_repainted_when_the_theme_changes(self):
         from pen_drive_maker.assinatura import tema

@@ -3,6 +3,39 @@
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o
 versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
+## [1.6.0] - 2026-10-22
+
+### Corrigido
+
+- **A fila nunca conferia o disco.** O banco guardava "baixada" para cada faixa
+  e confiava nisso para sempre: quem apagava ou movia as pastas continuava com
+  a fila marcada como pronta, a árvore da interface (lida do banco) seguia
+  mostrando pastas que já não existiam, e "reenfileirar" não ajudava porque só
+  olhava faixas que *falharam*.
+  - Ao abrir o programa e a cada **Iniciar**, as faixas marcadas como baixadas
+    cujo arquivo sumiu voltam para a fila, e a árvore é refeita.
+  - Novo botão **Verificar arquivos** faz a mesma conferência quando você quiser.
+  - Uma extensão diferente com o mesmo nome conta como presente, e sobras como
+    `.part` ou capas `.jpg` não.
+- **Pen drive desconectado não zera a fila.** Com a unidade ausente todo arquivo
+  pareceria sumido; a conferência só roda se a pasta de saída existia antes de
+  o programa tentar criá-la.
+- O exemplo "Destino" não acompanhava o campo Diretório de saída quando a pasta
+  era digitada ou colada.
+
+### Adicionado
+
+- **Limpar fila e histórico…** (menu Fila): esquece a playlist, a fila e o
+  histórico para recomeçar do zero, pedindo confirmação. Não apaga nenhum
+  arquivo do disco. O cache de gêneros é mantido.
+
+### Alterado
+
+- Ações da fila com nomes que dizem o que fazem, e uma explicação ao passar o
+  mouse: *Reenfileirar falhas* virou **Tentar de novo as que falharam**, e
+  *Reextrair playlist* virou **Atualizar lista da playlist** (busca a playlist
+  de novo e acrescenta as músicas novas, sem apagar nem rebaixar nada).
+
 ## [1.5.0] - 2026-10-22
 
 ### Adicionado
@@ -250,8 +283,10 @@ Primeira versão.
 - Interface PySide6 com contadores, barras de progresso, log colorido, árvore
   da estrutura de pastas criada e controles de pausar, retomar e parar.
 
+[1.6.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.6.0
 [1.5.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.5.0
 [1.4.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.4.0
+[1.6.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.6.0
 [1.5.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.5.0
 [1.4.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.4.0
 [1.3.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.3.0
