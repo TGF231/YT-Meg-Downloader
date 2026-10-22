@@ -200,6 +200,21 @@ class QueueStore:
             ).fetchone()
         return self._row_to_item(row) if row else None
 
+    def filepath_owner(self, stem: str) -> Optional[str]:
+        """Quem já baixou um arquivo com este caminho (sem extensão).
+
+        Sem a pasta de álbum, duas faixas do mesmo artista podem gerar o mesmo
+        nome; sem esta checagem o yt-dlp pularia a segunda achando que já a
+        tinha, e a faixa sumiria em silêncio.
+        """
+        padrao = stem.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT video_id FROM items WHERE filepath LIKE ? ESCAPE '\\' LIMIT 1",
+                (padrao + ".%",),
+            ).fetchone()
+        return row["video_id"] if row else None
+
     def mark_done(
         self,
         video_id: str,

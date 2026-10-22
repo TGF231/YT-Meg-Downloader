@@ -35,6 +35,14 @@ _FEATURING = re.compile(
 )
 
 
+# Quantos níveis de pasta criar. O que sai da pasta entra no nome do arquivo,
+# para a faixa continuar identificável e a ordenação continuar fazendo sentido.
+FOLDER_GENRE_ARTIST_ALBUM = "genre_artist_album"   # EDM/Avicii/True/02 - Wake Me Up
+FOLDER_GENRE_ARTIST = "genre_artist"               # EDM/Avicii/Wake Me Up
+FOLDER_GENRE = "genre"                             # EDM/Avicii - Wake Me Up
+FOLDER_STRUCTURES = (FOLDER_GENRE_ARTIST_ALBUM, FOLDER_GENRE_ARTIST, FOLDER_GENRE)
+
+
 # De onde sai o nome da pasta de gênero.
 GENRE_ONLINE = "online"            # consulta na internet (padrão)
 GENRE_FROM_PLAYLIST = "playlist"   # nome da playlist
@@ -51,8 +59,28 @@ class TrackTags:
     title: str
     track_number: Optional[int] = None
 
-    def folder_parts(self) -> list[str]:
+    def folder_parts(self, structure: str = FOLDER_GENRE_ARTIST_ALBUM) -> list[str]:
+        """Níveis de pasta. O que sai daqui vai para o nome do arquivo."""
+        if structure == FOLDER_GENRE:
+            return [self.genre]
+        if structure == FOLDER_GENRE_ARTIST:
+            return [self.genre, self.artist]
         return [self.genre, self.artist, self.album]
+
+    def file_stem(self, structure: str = FOLDER_GENRE_ARTIST_ALBUM) -> str:
+        """Nome do arquivo, sem extensão, antes do saneamento.
+
+        Com a pasta de álbum, o número da faixa ordena dentro dele. Sem ela, o
+        número só embaralharia faixas de álbuns diferentes, então sai; e sem a
+        pasta de artista, o artista entra no nome para a faixa não ficar órfã.
+        """
+        if structure == FOLDER_GENRE:
+            return f"{self.artist} - {self.title}" if self.artist else self.title
+        if structure == FOLDER_GENRE_ARTIST:
+            return self.title
+        if self.track_number:
+            return f"{self.track_number:02d} - {self.title}"
+        return self.title
 
 
 def strip_accents(text: str) -> str:
@@ -162,13 +190,19 @@ def resolve_tags(
     )
 
 
-def build_relative_path(tags: TrackTags, ascii_only: bool = True, max_len: int = 60) -> str:
+def build_relative_path(
+    tags: TrackTags,
+    ascii_only: bool = True,
+    max_len: int = 60,
+    structure: str = FOLDER_GENRE_ARTIST_ALBUM,
+) -> str:
     """Caminho relativo (sem extensão) dentro do diretório de saída."""
-    parts = [sanitize_component(p, ascii_only, max_len) for p in tags.folder_parts()]
-    stem = sanitize_component(tags.title, ascii_only, max_len)
-    if tags.track_number:
-        stem = f"{tags.track_number:02d} - {stem}"
-        stem = stem[: max_len + 5].rstrip(". ")
+    parts = [
+        sanitize_component(p, ascii_only, max_len)
+        for p in tags.folder_parts(structure)
+    ]
+    # O nome pode trazer artista e número, então cabe um pouco mais que a pasta.
+    stem = sanitize_component(tags.file_stem(structure), ascii_only, max_len + 24)
     return "/".join(parts + [stem])
 
 
@@ -177,6 +211,7 @@ def preview_path(
     ascii_only: bool = True,
     extension: str = "ext",
     genre: str = "Gênero",
+    structure: str = FOLDER_GENRE_ARTIST_ALBUM,
     max_len: int = 60,
     path_module=os.path,
 ) -> str:
@@ -186,10 +221,13 @@ def preview_path(
     do Windows (ntpath) rodando em qualquer sistema.
     """
     root = (root or "").strip().rstrip("/\\") or "<saída>"
+    exemplo = TrackTags(
+        genre=genre, artist="Artista", album="Álbum", title="Título", track_number=1
+    )
     parts = [
-        sanitize_component(p, ascii_only, max_len) for p in (genre, "Artista", "Álbum")
+        sanitize_component(p, ascii_only, max_len) for p in exemplo.folder_parts(structure)
     ]
-    stem = sanitize_component("01 - Título", ascii_only, max_len)
+    stem = sanitize_component(exemplo.file_stem(structure), ascii_only, max_len + 24)
     joined = path_module.sep.join([root, *parts, f"{stem}.{extension}"])
     # normpath uniformiza o separador: no Windows o QFileDialog devolve o
     # caminho com "/", e sem isto o exemplo sairia com os dois misturados.

@@ -297,6 +297,18 @@ class MainWindow(JanelaBase):
         self.genre_source.currentIndexChanged.connect(self._atualizar_estrutura)
         esquerda.addRow("Pasta de gênero:", self.genre_source)
 
+        self.folder_structure = QComboBox()
+        self.folder_structure.addItem("Gênero / Artista / Álbum", "genre_artist_album")
+        self.folder_structure.addItem("Gênero / Artista", "genre_artist")
+        self.folder_structure.addItem("Somente gênero", "genre")
+        self.folder_structure.setToolTip(
+            "Artista e álbum continuam gravados na tag do arquivo em qualquer "
+            "opção. O que sai da pasta entra no nome: sem a pasta de álbum o "
+            "número da faixa sai, e sem a de artista o nome dele entra."
+        )
+        self.folder_structure.currentIndexChanged.connect(self._atualizar_estrutura)
+        esquerda.addRow("Estrutura de pastas:", self.folder_structure)
+
         self.audio_format = QComboBox()
         for chave, rotulo in AUDIO_FORMATS.items():
             self.audio_format.addItem(rotulo, chave)
@@ -341,7 +353,7 @@ class MainWindow(JanelaBase):
         caixa = QGroupBox("Estrutura criada")
         layout = QVBoxLayout(caixa)
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Gênero / Artista / Álbum", "Faixas"])
+        self.tree.setHeaderLabels(["Pastas criadas", "Faixas"])
         self.tree.setColumnWidth(0, 520)
         layout.addWidget(self.tree)
         return caixa
@@ -394,6 +406,7 @@ class MainWindow(JanelaBase):
         self.min_interval.setValue(float(self.cfg.min_interval))
         self._selecionar(self.audio_format, self.cfg.audio_format)
         self._selecionar(self.genre_source, self.cfg.genre_source)
+        self._selecionar(self.folder_structure, self.cfg.folder_structure)
         self._selecionar(self.cookies_mode, self.cfg.cookies_mode)
         self.cookies_file.setText(str(self.cfg.cookies_file))
         indice = self.cookies_browser.findText(str(self.cfg.cookies_browser))
@@ -421,6 +434,7 @@ class MainWindow(JanelaBase):
         self.cfg.min_interval = self.min_interval.value()
         self.cfg.audio_format = self.audio_format.currentData()
         self.cfg.genre_source = self.genre_source.currentData()
+        self.cfg.folder_structure = self.folder_structure.currentData()
         self.cfg.cookies_mode = self.cookies_mode.currentData()
         self.cfg.cookies_file = self.cookies_file.text().strip()
         self.cfg.cookies_browser = self.cookies_browser.currentText()
@@ -636,6 +650,7 @@ class MainWindow(JanelaBase):
                 ascii_only=self.cfg.ascii_only,
                 extension="ext" if formato == "best" else formato,
                 genre=self._genero_de_exemplo(),
+                structure=self.folder_structure.currentData(),
             )
         )
 
@@ -667,6 +682,7 @@ class MainWindow(JanelaBase):
         for widget in (
             self.url_edit, self.output_edit, self.cookies_mode, self.cookies_file,
             self.cookies_browser, self.audio_format, self.genre_source,
+            self.folder_structure,
         ):
             widget.setEnabled(not rodando)
 
@@ -723,7 +739,10 @@ class MainWindow(JanelaBase):
 
     @Slot(str, object)
     def _ao_item_pronto(self, caminho: str, tags: TrackTags) -> None:
-        partes = [sanitize_component(p, self.cfg.ascii_only) for p in tags.folder_parts()]
+        partes = [
+            sanitize_component(p, self.cfg.ascii_only)
+            for p in tags.folder_parts(self.cfg.folder_structure)
+        ]
         self._acrescentar_na_arvore(partes, 1)
         if self.tree.topLevelItemCount():
             self.tree.expandItem(self.tree.topLevelItem(0))
@@ -731,7 +750,7 @@ class MainWindow(JanelaBase):
     def _acrescentar_na_arvore(self, partes, quantidade: int) -> None:
         no = None
         chave: tuple = ()
-        for parte in partes:
+        for parte in [p for p in partes if p]:
             chave = chave + (parte,)
             existente = self._tree_nodes.get(chave)
             if existente is None:
@@ -750,9 +769,9 @@ class MainWindow(JanelaBase):
         if self.store is None:
             return
         for genero, artista, album, quantidade in self.store.done_tree():
-            self._acrescentar_na_arvore(
-                [genero or "?", artista or "?", album or "?"], quantidade
-            )
+            # Artista e álbum vêm vazios quando as pastas deles estão desligadas.
+            niveis = [genero or "?"] + [p for p in (artista, album) if p]
+            self._acrescentar_na_arvore(niveis, quantidade)
 
     @Slot(str)
     def _ao_terminar_motor(self, motivo: str) -> None:

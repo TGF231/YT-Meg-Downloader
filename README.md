@@ -229,6 +229,35 @@ ferramenta **encerra de forma limpa** e explica no log como retomar.
 
 `<saída>/<Gênero>/<Artista>/<Álbum>/<NN - Título>.<ext>`
 
+O seletor **Estrutura de pastas** controla a profundidade:
+
+| Opção | Resultado |
+|---|---|
+| Gênero / Artista / Álbum (padrão) | `EDM/Avicii/True/02 - Wake Me Up.mp3` |
+| Gênero / Artista | `EDM/Avicii/Wake Me Up.mp3` |
+| Somente gênero | `EDM/Avicii - Wake Me Up.mp3` |
+
+O que sai da pasta entra no nome do arquivo: sem a pasta de álbum o número da
+faixa sai — fora do álbum ele só embaralharia faixas de discos diferentes —, e
+sem a pasta de artista o nome dele entra no arquivo. Artista e álbum seguem
+gravados na tag em qualquer opção, então o rádio continua mostrando-os.
+
+Com menos pastas cresce a chance de dois títulos iguais do mesmo artista
+gerarem o mesmo nome; nesse caso a segunda faixa recebe o id do vídeo no nome,
+e o log avisa.
+
+O seletor **Estrutura de pastas** permite tirar o nível de álbum:
+
+| Opção | Resultado |
+|---|---|
+| Gênero / Artista / Álbum (padrão) | `EDM/Avicii/True/02 - Wake Me Up.mp3` |
+| Gênero / Artista | `EDM/Avicii/02 - Wake Me Up.mp3` |
+
+O álbum fica gravado na tag do arquivo nos dois casos, então o rádio continua
+mostrando-o — a pasta é só uma forma de separar. Com um nível a menos, duas
+faixas do mesmo artista com o mesmo título poderiam gerar o mesmo nome; nesse
+caso a segunda recebe o id do vídeo no nome, e o log avisa.
+
 - **Gênero** é consultado na internet por padrão. O YouTube Music não informa
   gênero nenhum, então a ferramenta pergunta à busca pública do iTunes, que
   responde sem exigir chave. O seletor **Pasta de gênero** oferece:

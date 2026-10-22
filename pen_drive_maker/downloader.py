@@ -614,9 +614,20 @@ class DownloadEngine:
 
     # ------------------------------------------------------------- download
 
-    def _outtmpl_for(self, tags: TrackTags) -> str:
-        relative = build_relative_path(tags, self.cfg.ascii_only, self.cfg.max_component_len)
+    def _outtmpl_for(self, tags: TrackTags, video_id: str = "") -> str:
+        relative = build_relative_path(
+            tags,
+            self.cfg.ascii_only,
+            self.cfg.max_component_len,
+            self.cfg.folder_structure,
+        )
         base = Path(self.cfg.output_dir).expanduser().resolve() / relative
+        dono = self.store.filepath_owner(str(base))
+        if dono and dono != video_id:
+            # Outra faixa já ocupa esse nome: sem desempate ela seria sobrescrita
+            # ou esta seria pulada como "já baixada".
+            base = base.with_name(f"{base.name} [{video_id}]")
+            self._log("warn", f"Nome repetido; esta faixa vira {base.name}.")
         # O outtmpl é uma string de formatação: '%' literal precisa ser escapado.
         return str(base).replace("%", "%%") + ".%(ext)s"
 
@@ -642,7 +653,7 @@ class DownloadEngine:
                 tags = replace(tags, genre=encontrado)
             else:
                 self._log("debug", f"Gênero não encontrado para {tags.artist} - {tags.title}")
-        outtmpl = self._outtmpl_for(tags)
+        outtmpl = self._outtmpl_for(tags, item.video_id)
         self._log(
             "info",
             f"Destino: {sanitize_component(tags.genre, self.cfg.ascii_only)}/"
@@ -815,10 +826,15 @@ class DownloadEngine:
                 self._consecutive_failures = 0
                 self._block_events = 0  # sucesso limpa o histórico de bloqueios
                 # Guarda os nomes já saneados: é o que existe de fato no disco.
-                genre, artist, album = (
+                # Guarda os níveis que existem de fato: sem a pasta de álbum,
+                # o banco e a árvore da interface não devem inventá-la.
+                niveis = [
                     sanitize_component(part, self.cfg.ascii_only, self.cfg.max_component_len)
-                    for part in tags.folder_parts()
-                )
+                    for part in tags.folder_parts(self.cfg.folder_structure)
+                ]
+                genre = niveis[0]
+                artist = niveis[1] if len(niveis) > 1 else ""
+                album = niveis[2] if len(niveis) > 2 else ""
                 self.store.mark_done(item.video_id, path, genre, artist, album, tags.title)
                 self._log(
                     "ok",

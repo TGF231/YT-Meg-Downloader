@@ -3,6 +3,51 @@
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o
 versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
+## [1.4.0] - 2026-10-22
+
+### Adicionado
+
+- Seletor **Estrutura de pastas**: `Gênero / Artista / Álbum` (padrão) ou
+  `Gênero / Artista`. O álbum continua gravado na tag do arquivo nos dois
+  casos — a pasta é só uma forma de separar, e menos níveis significam menos
+  navegação no rádio do carro.
+- Desempate de nomes repetidos. Com um nível a menos, duas faixas do mesmo
+  artista com o mesmo título cairiam no mesmo arquivo: a segunda seria pulada
+  como "já baixada" e sumiria em silêncio. Agora ela recebe o id do vídeo no
+  nome, com aviso no log.
+
+### Corrigido
+
+- A árvore da interface mostrava um nível de álbum que não existia no disco
+  quando a pasta estava desligada.
+
+## [1.4.0] - 2026-10-22
+
+### Adicionado
+
+- Seletor **Estrutura de pastas**, com três níveis de profundidade. O que sai
+  da pasta entra no nome do arquivo, para a faixa continuar identificável e a
+  ordenação continuar fazendo sentido:
+
+  | Opção | Resultado |
+  |---|---|
+  | Gênero / Artista / Álbum (padrão) | `EDM/Avicii/True/02 - Wake Me Up.mp3` |
+  | Gênero / Artista | `EDM/Avicii/Wake Me Up.mp3` |
+  | Somente gênero | `EDM/Avicii - Wake Me Up.mp3` |
+
+  Artista e álbum continuam gravados na tag do arquivo em qualquer opção. O
+  número da faixa sai junto com a pasta de álbum, porque fora dela ele só
+  embaralharia faixas de álbuns diferentes.
+- Desempate de nomes repetidos. Com menos pastas, duas faixas do mesmo artista
+  com o mesmo título cairiam no mesmo arquivo: a segunda seria pulada como "já
+  baixada" e sumiria em silêncio. Agora recebe o id do vídeo no nome, com
+  aviso no log.
+
+### Corrigido
+
+- A árvore da interface mostrava níveis que não existiam no disco quando as
+  pastas correspondentes estavam desligadas.
+
 ## [1.3.0] - 2026-10-06
 
 ### Adicionado
@@ -194,6 +239,8 @@ Primeira versão.
 - Interface PySide6 com contadores, barras de progresso, log colorido, árvore
   da estrutura de pastas criada e controles de pausar, retomar e parar.
 
+[1.4.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.4.0
+[1.4.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.4.0
 [1.3.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.3.0
 [1.2.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.2.0
 [1.1.1]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.1.1

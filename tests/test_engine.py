@@ -387,6 +387,22 @@ class PreviewPathTest(unittest.TestCase):
         self.assertNotIn("Gênero", sem_acento)
         self.assertIn("Genero", sem_acento)
 
+    def test_preview_shows_each_folder_structure(self):
+        """O que sai da pasta tem de aparecer no nome do arquivo."""
+        import posixpath
+
+        esperado = {
+            "genre_artist_album": "/x/EDM/Artista/Album/01 - Titulo.ext",
+            "genre_artist": "/x/EDM/Artista/Titulo.ext",
+            "genre": "/x/EDM/Artista - Titulo.ext",
+        }
+        for estrutura, caminho in esperado.items():
+            self.assertEqual(
+                preview_path("/x", genre="EDM", structure=estrutura, path_module=posixpath),
+                caminho,
+                estrutura,
+            )
+
     def test_genre_placeholder_is_configurable(self):
         import posixpath
 
@@ -521,6 +537,41 @@ class EngineFlowTest(unittest.TestCase):
         self._run()
         artistas = {a for a, _ in FakeLookup.consultas}
         self.assertEqual(artistas, {"Artista"}, FakeLookup.consultas)
+
+    def test_genre_artist_structure(self):
+        self.cfg.folder_structure = "genre_artist"
+        self._run()
+        files = sorted(p.relative_to(self.tmp).as_posix() for p in pathlib.Path(self.tmp).rglob("*.m4a"))
+        self.assertIn("Playlist de Teste/Artista/Musica 1.m4a", files)
+        self.assertTrue(all(f.count("/") == 2 for f in files), files)
+
+    def test_genre_only_structure_keeps_the_artist_in_the_name(self):
+        self.cfg.folder_structure = "genre"
+        self._run()
+        files = sorted(p.relative_to(self.tmp).as_posix() for p in pathlib.Path(self.tmp).rglob("*.m4a"))
+        self.assertIn("Playlist de Teste/Artista - Musica 1.m4a", files)
+        self.assertTrue(all(f.count("/") == 1 for f in files), files)
+
+    def test_levels_that_do_not_exist_are_not_recorded(self):
+        """A árvore da interface não pode mostrar pasta que não está no disco."""
+        self.cfg.folder_structure = "genre"
+        self._run()
+        for _genero, artista, album, _n in self.store.done_tree():
+            self.assertEqual((artista, album), ("", ""))
+
+    def test_duplicate_names_do_not_overwrite_each_other(self):
+        """Com menos pastas, dois títulos iguais cairiam no mesmo arquivo."""
+        self.cfg.folder_structure = "genre_artist"
+        FakeYDL.tracks = {
+            "id01": {"id": "id01", "title": "Repetida", "artist": "Artista",
+                     "album": "Primeiro", "track_number": 1},
+            "id02": {"id": "id02", "title": "Repetida", "artist": "Artista",
+                     "album": "Segundo", "track_number": 1},
+        }
+        self._run()
+        files = sorted(p.relative_to(self.tmp).as_posix() for p in pathlib.Path(self.tmp).rglob("*.m4a"))
+        self.assertEqual(len(files), 2, f"uma faixa foi perdida: {files}")
+        self.assertEqual(self.store.stats().done, 2)
 
     def test_metadata_mode_prefers_the_track_genre(self):
         self.cfg.genre_source = "metadata"

@@ -53,6 +53,9 @@ class AppConfig:
     group_subgenres: bool = True
     default_genre: str = "Sem Genero"
     default_album: str = "Singles"
+    # Níveis de pasta — veja organizer.FOLDER_STRUCTURES. O que sai da pasta
+    # entra no nome do arquivo, e o álbum segue na tag em qualquer caso.
+    folder_structure: str = "genre_artist_album"
     ascii_only: bool = True          # nomes ASCII puros, mais seguros em FAT32/head units
     max_component_len: int = 60
 
@@ -99,6 +102,8 @@ class AppConfig:
             self.cookies_mode = "none"
         if self.genre_source not in ("online", "playlist", "metadata", "fixed"):
             self.genre_source = "online"
+        if self.folder_structure not in ("genre_artist_album", "genre_artist", "genre"):
+            self.folder_structure = "genre_artist_album"
 
     def validate(self) -> list[str]:
         """Retorna a lista de problemas que impedem o início do download."""
