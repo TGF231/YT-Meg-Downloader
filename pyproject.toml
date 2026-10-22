@@ -32,6 +32,8 @@ dependencies = [
     # Scripts do solucionador de desafios do YouTube; sem ele o yt-dlp tenta
     # buscar a biblioteca no npm durante o download.
     "yt-dlp-ejs>=0.8.0",
+    # Leitura das tags: reconhece músicas movidas e estruturas montadas à mão.
+    "mutagen>=1.47",
 ]
 
 [project.urls]

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
+from PySide6.QtGui import QActionGroup
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -36,9 +37,20 @@ from .assinatura import tema
 from .assinatura.acoes import BARRA, OCULTA, Acao
 from .assinatura.comum import ajustes, como_bool, definir_papel
 from .assinatura.janela import JanelaBase
+from .biblioteca_ui import PaginaBiblioteca, TarefaThread
 from .config import AUDIO_FORMATS, BROWSERS, AppConfig
 from .downloader import DownloadEngine, EngineCallbacks, check_cookies
-from .organizer import TrackTags, preview_path, sanitize_component
+from .library import (
+    ImportError_,
+    copy_library,
+    export_library,
+    import_library,
+    move_to_folder,
+    reconcile,
+    remove_tracks,
+    reorganize,
+)
+from .organizer import TrackTags, preview_path
 from .store import QueueStats, QueueStore
 from .tools import (
     describe_missing_ejs,
@@ -200,19 +212,39 @@ class MainWindow(JanelaBase):
     APP_NOME = APP_NOME
     APP_VERSAO = __version__
     ROTULO_MENUS = "Menu"
-    MENUS = (("fila", "Fila"), ("ferramentas", "Ferramentas"))
+    MENUS = (("fila", "Fila"), ("biblioteca", "Biblioteca"), ("ferramentas", "Ferramentas"))
     ACOES = (
-        Acao("act_iniciar", "Iniciar / Retomar", "iniciar", quando="parado", onde=BARRA),
+        Acao("act_pg_baixar", "Baixar", "mostrar_baixar", onde=BARRA, alternavel=True),
+        Acao("act_pg_biblioteca", "Biblioteca", "mostrar_biblioteca", onde=BARRA,
+             alternavel=True),
+        Acao("act_iniciar", "Iniciar / Retomar", "iniciar", quando="parado", onde=BARRA,
+             separador=True),
         Acao("act_pausar", "Pausar", "alternar_pausa", quando="rodando", onde=BARRA),
         Acao("act_parar", "Parar", "parar", quando="rodando", onde=BARRA),
-        Acao("act_verificar", "Verificar arquivos", "verificar_arquivos", quando="parado",
+        Acao("act_verificar", "Verificar biblioteca", "verificar_arquivos", quando="parado",
              onde=BARRA, separador=True),
         Acao("act_requeue", "Tentar de novo as que falharam", "reenfileirar",
              quando="parado", onde="fila"),
         Acao("act_reextrair", "Atualizar lista da playlist", "reextrair", quando="parado",
              onde="fila"),
-        Acao("act_limpar_fila", "Limpar fila e histórico…", "limpar_fila", quando="parado",
-             onde="fila", separador=True),
+        Acao("act_reorganizar", "Aplicar estrutura atual aos arquivos…", "reorganizar",
+             quando="parado", onde="biblioteca"),
+        Acao("act_exportar", "Exportar biblioteca…", "exportar", quando="parado",
+             onde="biblioteca", separador=True),
+        Acao("act_importar", "Importar biblioteca…", "importar", quando="parado",
+             onde="biblioteca"),
+        Acao("act_copiar", "Copiar para outro pen drive…", "copiar_para", quando="parado",
+             onde="biblioteca"),
+        Acao("act_limpar_fila", "Esquecer a biblioteca…", "limpar_fila", quando="parado",
+             onde="biblioteca", separador=True),
+        Acao("act_sel_mover", "Mover para pasta…", "mover_selecao", quando="selecao",
+             onde=OCULTA),
+        Acao("act_sel_liberar", "Voltar à estrutura automática", "liberar_selecao",
+             quando="selecao", onde=OCULTA),
+        Acao("act_sel_rebaixar", "Baixar de novo", "rebaixar_selecao", quando="selecao",
+             onde=OCULTA),
+        Acao("act_sel_remover", "Remover da biblioteca…", "remover_selecao",
+             quando="selecao", onde=OCULTA),
         Acao("act_opcoes", "Opções avançadas…", "abrir_opcoes", quando="parado",
              onde="ferramentas"),
         Acao("act_testar", "Testar ferramentas externas", "testar_ferramentas",
@@ -230,7 +262,15 @@ class MainWindow(JanelaBase):
         self.bridge = EngineBridge()
         self._tree_nodes: Dict[tuple, QTreeWidgetItem] = {}
         self._rodando = False
+        self._ocupado = False
+        self._tarefa: Optional[TarefaThread] = None
         super().__init__()
+        # Par exclusivo: o botão marcado diz qual página está à vista.
+        self._grupo_paginas = QActionGroup(self)
+        self._grupo_paginas.setExclusive(True)
+        self._grupo_paginas.addAction(self.act_pg_baixar)
+        self._grupo_paginas.addAction(self.act_pg_biblioteca)
+        self.act_pg_baixar.setChecked(True)
         self._conectar_bridge()
         self._explicar_acoes()
         self._carregar_preferencias()
@@ -241,8 +281,34 @@ class MainWindow(JanelaBase):
     DICAS = {
         "act_iniciar": "Começa ou continua a fila. Faixas já baixadas são puladas.",
         "act_verificar": (
-            "Compara a fila com a pasta de saída: faixas marcadas como baixadas "
-            "cujo arquivo foi apagado ou movido voltam para a fila."
+            "Compara a biblioteca com o disco: reconhece arquivos que você moveu, "
+            "aprende arquivos postos à mão e devolve à fila o que foi apagado."
+        ),
+        "act_reorganizar": (
+            "Move os arquivos já baixados para a estrutura de pastas escolhida, sem "
+            "baixar de novo. Faixas fixadas ficam onde estão."
+        ),
+        "act_exportar": (
+            "Grava a biblioteca — cada música e o local dela — num arquivo, para "
+            "reproduzi-la em outro computador ou pen drive."
+        ),
+        "act_importar": (
+            "Acrescenta uma biblioteca exportada. As faixas ficam na fila, cada uma "
+            "fixada no mesmo local que tinha."
+        ),
+        "act_copiar": (
+            "Reproduz esta biblioteca em outra pasta, com a mesma estrutura: copia o "
+            "que existe aqui e deixa na fila o que faltar."
+        ),
+        "act_sel_mover": "Move as faixas selecionadas para uma pasta e as fixa lá.",
+        "act_sel_liberar": (
+            "Tira a fixação: a próxima reorganização devolve as faixas à estrutura "
+            "de pastas automática."
+        ),
+        "act_sel_rebaixar": "Põe as faixas selecionadas de volta na fila.",
+        "act_sel_remover": (
+            "Tira as faixas da biblioteca. Uma atualização da playlist não as traz "
+            "de volta."
         ),
         "act_requeue": (
             "Devolve à fila as faixas que falharam todas as tentativas, para "
@@ -253,7 +319,7 @@ class MainWindow(JanelaBase):
             "Não apaga nada e não rebaixa o que já está pronto."
         ),
         "act_limpar_fila": (
-            "Esquece a playlist, a fila e o histórico, para recomeçar do zero. "
+            "Esquece playlists, fila e histórico desta pasta, para recomeçar do zero. "
             "Não apaga nenhum arquivo do disco."
         ),
     }
@@ -278,7 +344,15 @@ class MainWindow(JanelaBase):
         divisor.addWidget(self._caixa_log())
         divisor.setSizes([260, 260])
         fora.addWidget(divisor, 1)
+        self.pagina_baixar = pagina
         self.adicionar_pagina(pagina)
+
+        self.pagina_biblioteca = PaginaBiblioteca()
+        for atributo in ("act_sel_mover", "act_sel_liberar", "act_sel_rebaixar",
+                         "act_sel_remover"):
+            self.pagina_biblioteca.acrescentar_botao(getattr(self, atributo))
+        self.pagina_biblioteca.selecao_mudou.connect(self.atualizar_acoes)
+        self.adicionar_pagina(self.pagina_biblioteca)
 
     def _caixa_playlist(self) -> QGroupBox:
         caixa = QGroupBox("Playlist e destino")
@@ -421,14 +495,23 @@ class MainWindow(JanelaBase):
     # -------------------------------------------------- ganchos JanelaBase
 
     def estados(self) -> set:
-        return {"rodando"} if self._rodando else {"parado"}
+        if self._rodando:
+            return {"rodando"}
+        if self._ocupado:
+            return {"ocupado"}  # tarefa de biblioteca em andamento
+        estados = {"parado"}
+        pagina = getattr(self, "pagina_biblioteca", None)
+        if pagina is not None and pagina.selecionadas():
+            estados.add("selecao")
+        return estados
 
     def contexto_da_barra(self) -> str:
         return self.url_edit.text().strip() if hasattr(self, "url_edit") else ""
 
     def ao_trocar_tema(self) -> None:
-        """O log guarda cor por linha: a folha de estilo não alcança."""
+        """Log e coluna de status pintam cor em Python: a folha de estilo não alcança."""
         self._repintar_log()
+        self.pagina_biblioteca.modelo.repintar()
 
     # ------------------------------------------------------- preferências
 
@@ -485,7 +568,10 @@ class MainWindow(JanelaBase):
         if self._rodando:
             return
         cfg = self.config_atual()
-        problemas = cfg.validate()
+        tem_trabalho = False
+        if cfg.output_dir.strip() and cfg.db_path().exists():
+            tem_trabalho = self._abrir_store(cfg).stats().pending > 0
+        problemas = cfg.validate(library_has_work=tem_trabalho)
         if problemas:
             QMessageBox.warning(self, "Configuração incompleta", "\n".join(problemas))
             return
@@ -550,37 +636,347 @@ class MainWindow(JanelaBase):
         self.registrar("info", f"{quantidade} faixa(s) com falha voltaram para a fila.")
         self._ao_stats(store.stats())
 
+    # ------------------------------------------------------- biblioteca
+
+    def mostrar_baixar(self, ligado: bool = True) -> None:
+        if not ligado:
+            return  # o par exclusivo desmarcou este botão ao marcar o outro
+        if not self.act_pg_baixar.isChecked():
+            # Chamado direto (não pelo clique): marcar dispara toggled e volta aqui.
+            self.act_pg_baixar.setChecked(True)
+            return
+        self.mostrar_pagina(self.pagina_baixar)
+
+    def mostrar_biblioteca(self, ligado: bool = True) -> None:
+        if not ligado:
+            return
+        if not self.act_pg_biblioteca.isChecked():
+            self.act_pg_biblioteca.setChecked(True)
+            return
+        cfg = self.config_atual()
+        if cfg.output_dir.strip() and cfg.db_path().exists():
+            self._abrir_store(cfg)
+        self._recarregar_biblioteca()
+        self.mostrar_pagina(self.pagina_biblioteca)
+
+    def _recarregar_biblioteca(self) -> None:
+        if self.store is None:
+            self.pagina_biblioteca.recarregar([], 0)
+        else:
+            self.pagina_biblioteca.recarregar(
+                self.store.list_items(), len(self.store.list_playlists())
+            )
+        self.atualizar_acoes()
+
+    def _raiz(self) -> Path:
+        return Path(self.config_atual().output_dir).expanduser()
+
+    def _rodar_tarefa(self, titulo: str, funcao, ao_terminar) -> None:
+        """Tarefa longa de biblioteca numa thread, com progresso na janela."""
+        self._ocupado = True
+        self.atualizar_acoes()
+        self.registrar("info", f"{titulo}...")
+        tarefa = TarefaThread(funcao, self)
+        tarefa.progresso.connect(self._ao_progresso_tarefa)
+        tarefa.terminou.connect(lambda resultado: self._fim_tarefa(ao_terminar, resultado))
+        tarefa.falhou.connect(lambda erro: self._falha_tarefa(titulo, erro))
+        self._tarefa = tarefa
+        tarefa.start()
+
+    @Slot(int, int, str)
+    def _ao_progresso_tarefa(self, feito: int, total: int, texto: str) -> None:
+        self.barra_faixa.setMaximum(max(1, total))
+        self.barra_faixa.setValue(feito)
+        self.barra_faixa.setFormat(f"{feito}/{total}")
+        self.statusBar().showMessage(texto)
+
+    def _encerrar_tarefa(self) -> None:
+        self._ocupado = False
+        self.barra_faixa.setMaximum(100)
+        self.barra_faixa.setValue(0)
+        self.barra_faixa.setFormat("Faixa atual: %p%")
+        if self.store is not None:
+            self._remontar_arvore()
+            self._ao_stats(self.store.stats())
+        self._recarregar_biblioteca()
+
+    def _fim_tarefa(self, ao_terminar, resultado) -> None:
+        self._encerrar_tarefa()
+        ao_terminar(resultado)
+
+    def _falha_tarefa(self, titulo: str, erro: str) -> None:
+        self._encerrar_tarefa()
+        self.registrar("error", f"{titulo} falhou: {erro}")
+        QMessageBox.critical(self, titulo, erro)
+
     def verificar_arquivos(self) -> None:
-        """Faixas baixadas cujo arquivo sumiu voltam para a fila."""
+        """Conferência completa: movidas, apagadas e postas à mão."""
+        store = self._store_para_leitura()
+        if store is None:
+            return
+        raiz = self._raiz()
+        if not raiz.is_dir():
+            QMessageBox.warning(
+                self, "Pasta da biblioteca não encontrada",
+                "A pasta da biblioteca não existe agora, então não dá para conferir os "
+                "arquivos. Se ela fica num pen drive, conecte-o e tente de novo.",
+            )
+            return
+        self._rodar_tarefa(
+            "Verificando a biblioteca",
+            lambda progresso, stop: reconcile(store, raiz, full=True, progresso=progresso,
+                                              stop=stop),
+            self._relatar_verificacao,
+        )
+
+    def _relatar_verificacao(self, relatorio) -> None:
+        if relatorio.moved:
+            self.registrar("info", f"{len(relatorio.moved)} faixa(s) mudaram de pasta; "
+                                   "a biblioteca agora aponta para onde estão.")
+        if relatorio.adopted:
+            self.registrar("ok", f"{len(relatorio.adopted)} arquivo(s) postos à mão "
+                                 "entraram na biblioteca.")
+        if relatorio.missing:
+            self.registrar("warn", f"{len(relatorio.missing)} faixa(s) sumiram do disco "
+                                   "e voltaram para a fila.")
+        if relatorio.unknown:
+            self.registrar(
+                "warn",
+                f"{len(relatorio.unknown)} arquivo(s) de áudio sem origem conhecida "
+                "(não foram baixados por este programa, ou foram sem metadados):",
+            )
+            for caminho in relatorio.unknown[:10]:
+                self.registrar("warn", f"  {caminho}")
+        for video_id, caminhos in list(relatorio.duplicates.items())[:10]:
+            self.registrar("warn", f"Mesma música em mais de um lugar: {', '.join(caminhos)}")
+        if not (relatorio.changed or relatorio.unknown or relatorio.duplicates):
+            self.registrar("ok", "Biblioteca conferida: tudo no lugar.")
+
+    def reorganizar(self) -> None:
         store = self._store_para_leitura()
         if store is None:
             return
         cfg = self.config_atual()
-        quantidade = self._conferir_disco(store, cfg, True)
-        if quantidade < 0:
-            QMessageBox.warning(
-                self, "Pasta de saída não encontrada",
-                "A pasta de saída não existe agora, então não dá para conferir os "
-                "arquivos. Se ela fica num pen drive, conecte-o e tente de novo.",
+        if not self._perguntar(
+            "Aplicar estrutura atual",
+            "Mover os arquivos já baixados para a estrutura de pastas escolhida?",
+            "Nada é baixado de novo: os arquivos só mudam de pasta. Faixas fixadas "
+            "(postas à mão) ficam onde estão. Pastas que ficarem vazias são removidas.",
+            "Mover arquivos",
+        ):
+            return
+        self._rodar_tarefa(
+            "Reorganizando a biblioteca",
+            lambda progresso, stop: reorganize(
+                store, self._raiz(), cfg.folder_structure, cfg.ascii_only,
+                cfg.max_component_len, cfg.default_genre, cfg.default_album,
+                progresso, stop,
+            ),
+            lambda r: self.registrar(
+                "ok", f"{r.moved} arquivo(s) movidos; {r.kept_pinned} fixado(s) mantidos "
+                      "no lugar." + (f" {r.missing} não estavam no disco." if r.missing else "")
+            ),
+        )
+
+    def _pedir_arquivo(self, salvar: bool) -> str:
+        filtro = "Biblioteca do Pen Drive Maker (*.json);;Todos (*)"
+        if salvar:
+            sugestao = str(self._raiz() / "biblioteca.pdmlib.json")
+            caminho, _ = QFileDialog.getSaveFileName(self, "Exportar biblioteca", sugestao, filtro)
+        else:
+            caminho, _ = QFileDialog.getOpenFileName(self, "Importar biblioteca",
+                                                     str(Path.home()), filtro)
+        return caminho
+
+    def exportar(self) -> None:
+        store = self._store_para_leitura()
+        if store is None:
+            return
+        caminho = self._pedir_arquivo(salvar=True)
+        if not caminho:
+            return
+        try:
+            quantidade = export_library(store, Path(caminho))
+        except OSError as erro:
+            QMessageBox.critical(self, "Exportar", f"Não foi possível gravar:\n{erro}")
+            return
+        self.registrar("ok", f"{quantidade} faixa(s) exportadas para {caminho}")
+
+    def importar(self) -> None:
+        cfg = self.config_atual()
+        if not cfg.output_dir.strip():
+            QMessageBox.warning(self, "Importar", "Escolha antes a pasta da biblioteca.")
+            return
+        caminho = self._pedir_arquivo(salvar=False)
+        if not caminho:
+            return
+        self._raiz().mkdir(parents=True, exist_ok=True)
+        store = self._abrir_store(cfg)
+        try:
+            novas, existentes = import_library(store, Path(caminho))
+        except ImportError_ as erro:
+            QMessageBox.warning(self, "Importar", str(erro))
+            return
+        self.registrar(
+            "ok", f"{novas} faixa(s) importadas"
+                  + (f", {existentes} já estavam aqui" if existentes else "")
+                  + ". Clique em Iniciar para baixá-las nos mesmos locais."
+        )
+        self._ao_stats(store.stats())
+        self._recarregar_biblioteca()
+
+    def _pedir_pasta(self, titulo: str, inicio: str) -> str:
+        return QFileDialog.getExistingDirectory(self, titulo, inicio)
+
+    def _escolher_modo_copia(self) -> Optional[bool]:
+        """True = copiar arquivos; False = só a estrutura; None = cancelar."""
+        caixa = QMessageBox(self)
+        caixa.setWindowTitle("Copiar para outro pen drive")
+        caixa.setText("Como reproduzir a biblioteca no destino?")
+        caixa.setInformativeText(
+            "Copiar os arquivos é muito mais rápido que baixar de novo. Use 'só a "
+            "estrutura' quando estes arquivos não estiverem à mão: tudo será baixado "
+            "no destino, nos mesmos locais."
+        )
+        copiar = caixa.addButton("Copiar arquivos", QMessageBox.ButtonRole.AcceptRole)
+        estrutura = caixa.addButton("Só a estrutura", QMessageBox.ButtonRole.ActionRole)
+        caixa.addButton("Cancelar", QMessageBox.ButtonRole.RejectRole)
+        caixa.setDefaultButton(copiar)
+        caixa.exec()
+        if caixa.clickedButton() is copiar:
+            return True
+        if caixa.clickedButton() is estrutura:
+            return False
+        return None
+
+    def copiar_para(self) -> None:
+        store = self._store_para_leitura()
+        if store is None:
+            return
+        destino = self._pedir_pasta("Pasta de destino (outro pen drive)", str(Path.home()))
+        if not destino:
+            return
+        destino_p = Path(destino).resolve()
+        raiz = self._raiz().resolve()
+        if destino_p == raiz or raiz in destino_p.parents:
+            QMessageBox.warning(self, "Copiar", "O destino não pode ser esta biblioteca "
+                                                "nem uma pasta dentro dela.")
+            return
+        modo = self._escolher_modo_copia()
+        if modo is None:
+            return
+
+        def ao_terminar(relatorio) -> None:
+            self.registrar(
+                "ok", f"Biblioteca reproduzida em {destino_p}: {relatorio.copied} arquivo(s) "
+                      f"copiados, {relatorio.queued} na fila para baixar."
             )
-        elif quantidade == 0:
-            self.registrar("ok", "Todos os arquivos baixados estão no disco.")
+            for falha in relatorio.failed[:10]:
+                self.registrar("error", f"  não copiado: {falha}")
+            if self._perguntar(
+                "Usar o novo destino?",
+                "Trocar a pasta da biblioteca para o destino agora?",
+                "Assim, ao clicar em Iniciar, o que faltar é baixado direto lá.",
+                "Usar o destino",
+            ):
+                self.output_edit.setText(str(destino_p))
+                self._abrir_store(self.config_atual())
+                self._recarregar_biblioteca()
+
+        self._rodar_tarefa(
+            "Copiando a biblioteca",
+            lambda progresso, stop: copy_library(store, destino_p, modo, progresso, stop),
+            ao_terminar,
+        )
+
+    def mover_selecao(self) -> None:
+        ids = self.pagina_biblioteca.selecionadas()
+        if not ids or self.store is None:
+            return
+        raiz = self._raiz().resolve()
+        escolhida = self._pedir_pasta("Mover para qual pasta da biblioteca?", str(raiz))
+        if not escolhida:
+            return
+        pasta = Path(escolhida).resolve()
+        if pasta != raiz and raiz not in pasta.parents:
+            QMessageBox.warning(self, "Mover", "Escolha uma pasta dentro da biblioteca.")
+            return
+        relativa = "" if pasta == raiz else pasta.relative_to(raiz).as_posix()
+        movidas = move_to_folder(self.store, raiz, ids, relativa)
+        self.registrar("ok", f"{movidas} arquivo(s) movidos para '{relativa or '(raiz)'}' "
+                             f"e {len(ids)} faixa(s) fixadas lá.")
+        self._remontar_arvore()
+        self._recarregar_biblioteca()
+
+    def liberar_selecao(self) -> None:
+        ids = self.pagina_biblioteca.selecionadas()
+        if not ids or self.store is None:
+            return
+        self.store.set_pinned(ids, False)
+        self.registrar("info", f"{len(ids)} faixa(s) liberadas. 'Aplicar estrutura atual' "
+                               "as devolve às pastas automáticas.")
+        self._recarregar_biblioteca()
+
+    def rebaixar_selecao(self) -> None:
+        ids = self.pagina_biblioteca.selecionadas()
+        if not ids or self.store is None:
+            return
+        # Mantém o local de quem está fixado: a faixa volta exatamente para lá.
+        self.store.requeue(ids, forget_location=True)
+        self.registrar("info", f"{len(ids)} faixa(s) de volta na fila.")
+        self._ao_stats(self.store.stats())
+        self._recarregar_biblioteca()
+
+    def _confirmar_remocao(self, quantidade: int) -> Optional[bool]:
+        """True = apagar arquivos também; False = só tirar da biblioteca; None = cancelar."""
+        caixa = QMessageBox(self)
+        caixa.setIcon(QMessageBox.Icon.Warning)
+        caixa.setWindowTitle("Remover da biblioteca")
+        caixa.setText(f"Remover {quantidade} faixa(s) da biblioteca?")
+        caixa.setInformativeText(
+            "Elas não voltam quando a playlist for atualizada. Se o arquivo continuar "
+            "dentro da pasta da biblioteca, a próxima verificação o reconhece de novo."
+        )
+        apagar = QCheckBox("Apagar também os arquivos do disco")
+        apagar.setChecked(True)
+        caixa.setCheckBox(apagar)
+        remover = caixa.addButton("Remover", QMessageBox.ButtonRole.DestructiveRole)
+        caixa.addButton("Cancelar", QMessageBox.ButtonRole.RejectRole)
+        caixa.exec()
+        if caixa.clickedButton() is not remover:
+            return None
+        return apagar.isChecked()
+
+    def remover_selecao(self) -> None:
+        ids = self.pagina_biblioteca.selecionadas()
+        if not ids or self.store is None:
+            return
+        apagar = self._confirmar_remocao(len(ids))
+        if apagar is None:
+            return
+        remove_tracks(self.store, self._raiz(), ids, apagar_arquivos=apagar)
+        self.registrar("info", f"{len(ids)} faixa(s) removidas da biblioteca"
+                               + (" e do disco." if apagar else "."))
+        self._remontar_arvore()
+        self._ao_stats(self.store.stats())
+        self._recarregar_biblioteca()
 
     def limpar_fila(self) -> None:
         """Recomeça do zero: esquece a playlist, a fila e o histórico."""
         cfg = self.config_atual()
         if not cfg.output_dir.strip() or not cfg.db_path().exists():
-            QMessageBox.information(self, "Fila", "Não há fila nem histórico para limpar.")
+            QMessageBox.information(self, "Biblioteca", "Não há biblioteca para esquecer.")
             return
         if not self._perguntar(
-            "Limpar fila e histórico",
-            "Esquecer a playlist, a fila e o histórico desta pasta?",
+            "Esquecer a biblioteca",
+            "Esquecer playlists, fila e histórico desta pasta?",
             "Nenhum arquivo é apagado do disco.\n\n"
             "Na próxima vez que clicar em Iniciar, a playlist é buscada de novo e "
             "todas as faixas são baixadas outra vez, já com a estrutura de pastas "
             "escolhida agora. Os arquivos antigos continuam onde estão: apague as "
-            "pastas antigas à mão para não ficar com duplicatas.",
-            "Limpar fila e histórico",
+            "pastas antigas à mão para não ficar com duplicatas — ou use 'Verificar "
+            "biblioteca' para que ela os reconheça em vez de baixar de novo.",
+            "Esquecer a biblioteca",
         ):
             return
         store = self._abrir_store(cfg)
@@ -588,7 +984,8 @@ class MainWindow(JanelaBase):
         self._remontar_arvore()
         self._ao_stats(store.stats())
         self._atualizar_estrutura()
-        self.registrar("info", "Fila e histórico limpos. Clique em Iniciar para recomeçar.")
+        self.registrar("info", "Biblioteca esquecida. Clique em Iniciar para recomeçar.")
+        self._recarregar_biblioteca()
 
     def limpar_cache_generos(self) -> None:
         store = self._store_para_leitura()
@@ -749,16 +1146,20 @@ class MainWindow(JanelaBase):
         """
         if not raiz_existe:
             return -1
-        voltaram = store.verify_files()
-        if voltaram:
+        # Rápida: só varre as tags se algo sumiu (para achar o que foi movido).
+        relatorio = reconcile(store, self._raiz())
+        if relatorio.moved:
+            self.registrar("info", f"{len(relatorio.moved)} faixa(s) mudaram de pasta; "
+                                   "a biblioteca agora aponta para onde estão.")
+        if relatorio.missing:
             self.registrar(
                 "warn",
-                f"{len(voltaram)} faixa(s) estavam marcadas como baixadas, mas o "
+                f"{len(relatorio.missing)} faixa(s) estavam marcadas como baixadas, mas o "
                 "arquivo não está mais no disco. Voltaram para a fila.",
             )
         self._remontar_arvore()
         self._ao_stats(store.stats())
-        return len(voltaram)
+        return len(relatorio.missing)
 
     def _carregar_estado_anterior(self) -> None:
         """Ao abrir, mostra a fila da sessão anterior já conferida com o disco."""
@@ -791,7 +1192,7 @@ class MainWindow(JanelaBase):
             QMessageBox.warning(self, "Configuração", "Escolha o diretório de saída.")
             return None
         if not cfg.db_path().exists():
-            QMessageBox.information(self, "Fila", "Nenhuma fila encontrada nesse diretório.")
+            QMessageBox.information(self, "Biblioteca", "Nenhuma biblioteca nesta pasta ainda.")
             return None
         return self._abrir_store(cfg)
 
@@ -858,11 +1259,12 @@ class MainWindow(JanelaBase):
 
     @Slot(str, object)
     def _ao_item_pronto(self, caminho: str, tags: TrackTags) -> None:
-        partes = [
-            sanitize_component(p, self.cfg.ascii_only)
-            for p in tags.folder_parts(self.cfg.folder_structure)
-        ]
-        self._acrescentar_na_arvore(partes, 1)
+        # A árvore mostra as pastas reais, inclusive as de faixas fixadas.
+        try:
+            partes = list(Path(caminho).resolve().relative_to(self._raiz().resolve()).parts[:-1])
+        except (ValueError, OSError):
+            partes = []
+        self._acrescentar_na_arvore(partes or ["(raiz)"], 1)
         if self.tree.topLevelItemCount():
             self.tree.expandItem(self.tree.topLevelItem(0))
 
@@ -887,11 +1289,8 @@ class MainWindow(JanelaBase):
         self._tree_nodes.clear()
         if self.store is None:
             return
-        for genero, artista, album, quantidade in self.store.done_tree():
-            # Cada nível desligado vem vazio; a ordem gravada é sempre
-            # gênero, artista, álbum.
-            niveis = [p for p in (genero, artista, album) if p] or ["?"]
-            self._acrescentar_na_arvore(niveis, quantidade)
+        for pastas, quantidade in self.store.folder_tree():
+            self._acrescentar_na_arvore(list(pastas) or ["(raiz)"], quantidade)
 
     @Slot(str)
     def _ao_terminar_motor(self, motivo: str) -> None:
@@ -906,10 +1305,14 @@ class MainWindow(JanelaBase):
         if self.store is not None:
             self._ao_stats(self.store.stats())
             self._atualizar_estrutura()
+        self._recarregar_biblioteca()
 
     # ----------------------------------------------------------- janela
 
     def closeEvent(self, evento) -> None:
+        if self._tarefa is not None and self._tarefa.isRunning():
+            self._tarefa.stop.set()
+            self._tarefa.wait(30000)
         if self.thread is not None and self.thread.isRunning():
             resposta = QMessageBox.question(
                 self, "Sair",

@@ -107,11 +107,17 @@ class AppConfig:
         ):
             self.folder_structure = "genre_artist_album"
 
-    def validate(self) -> list[str]:
-        """Retorna a lista de problemas que impedem o início do download."""
+    def validate(self, library_has_work: bool = False) -> list[str]:
+        """Retorna a lista de problemas que impedem o início do download.
+
+        Sem URL ainda há o que fazer quando a biblioteca tem faixas pendentes:
+        depois de importar uma biblioteca ou copiá-la para outro pen drive,
+        "Iniciar" só precisa completar o que falta.
+        """
         problems: list[str] = []
         if not self.playlist_url.strip():
-            problems.append("Informe a URL da playlist.")
+            if not library_has_work:
+                problems.append("Informe a URL da playlist.")
         elif not self.playlist_url.strip().lower().startswith(("http://", "https://")):
             problems.append("A URL da playlist deve começar com http:// ou https://.")
         if not self.output_dir.strip():

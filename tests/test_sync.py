@@ -92,7 +92,7 @@ class VerifyFilesTest(unittest.TestCase):
         _faixa(self.store, "a", arquivo)
         arquivo.unlink()
         self.store.verify_files()
-        self.assertEqual(self.store.done_tree(), [])
+        self.assertEqual(self.store.folder_tree(), [])
         item = self.store.list_items()[0]
         self.assertIsNone(item.filepath)
         self.assertEqual(item.attempts, 0)

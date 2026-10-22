@@ -112,40 +112,6 @@ aparência e a escolha fica salva.
 
 As configurações ficam salvas entre execuções (`QSettings`).
 
-### O que cada botão da fila faz
-
-| Botão | O que faz | Apaga arquivos? |
-|---|---|---|
-| **Iniciar / Retomar** | Continua a fila. Antes, confere se os arquivos já baixados ainda existem | Não |
-| **Verificar arquivos** | Faixas marcadas como baixadas cujo arquivo foi apagado ou movido voltam para a fila | Não |
-| *Menu → Fila →* **Tentar de novo as que falharam** | Devolve à fila as faixas que esgotaram as tentativas | Não |
-| *Menu → Fila →* **Atualizar lista da playlist** | Busca a playlist de novo e acrescenta músicas novas; não remove nem rebaixa nada | Não |
-| *Menu → Fila →* **Limpar fila e histórico…** | Esquece tudo para recomeçar do zero; a próxima execução rebusca a playlist | Não |
-
-**Apaguei as pastas, e agora?** Clique em **Iniciar**: ele nota que os arquivos
-sumiram e baixa de novo só o que falta. **Mudei a estrutura de pastas e quero
-tudo na estrutura nova?** Use *Limpar fila e histórico…* e depois **Iniciar**.
-Os arquivos antigos continuam onde estão, então apague as pastas antigas à mão
-para não ficar com duplicatas.
-
-Com a pasta de saída num pen drive, a conferência só roda se a pasta existir:
-desconectado, o programa avisa em vez de achar que você apagou tudo.
-
-### Retomada
-
-A fila fica em `<saída>/.pen-drive-maker/queue.db` (SQLite). Fechar o programa,
-parar no meio ou ser bloqueado não perde nada: ao clicar em **Iniciar /
-Retomar** com o mesmo diretório de saída, a playlist **não** é reextraída e as
-faixas já baixadas **não** são repetidas.
-
-| Botão | O que faz |
-|---|---|
-| Iniciar / Retomar | Começa ou continua a fila |
-| Pausar / Retomar | Pausa entre faixas, sem perder o estado |
-| Parar | Encerra de forma limpa após a faixa atual |
-| Reenfileirar falhas | Devolve as faixas marcadas como falha para a fila |
-| Reextrair playlist | Rebusca a lista (para playlists que ganharam músicas novas) |
-
 ### Cookies
 
 Cookies de uma conta logada reduzem bastante a chance de bloqueio e são
@@ -221,6 +187,109 @@ URLs de mix ou rádio (o `list=` começa com `RD`) são geradas dinamicamente pe
 YouTube e podem devolver menos faixas do que o aplicativo mostra. Se a contagem
 extraída vier bem abaixo do esperado, salve a playlist na sua biblioteca e use
 a URL da playlist salva.
+
+## Biblioteca
+
+A pasta de saída é uma **biblioteca**: um catálogo de músicas, cada uma ligada à
+URL de onde veio e ao lugar onde foi salva. O catálogo fica dentro da própria
+pasta, em `.pen-drive-maker/queue.db`, e vai junto com ela.
+
+O que liga um arquivo à biblioteca é a **URL de origem gravada dentro dele**, na
+tag de comentário. Por isso o caminho não é a única pista: você pode reorganizar
+os arquivos no Explorer, e o programa os reconhece depois.
+
+> Para isso, **Gravar metadados na tag** (Opções avançadas) precisa estar
+> ligado, como vem por padrão. Sem tags, um arquivo movido parece sumido e é
+> baixado de novo.
+
+### Várias playlists, sem repetir
+
+Cole a URL de outra playlist e clique em **Iniciar**: ela se soma à biblioteca.
+Músicas que outra playlist já trouxe **não são baixadas de novo** — só ganham o
+vínculo com a nova. O log diz quantas eram repetidas.
+
+Com o campo de URL vazio, **Iniciar** completa a biblioteca: baixa o que estiver
+na fila, vindo de qualquer playlist, de uma importação ou de faixas apagadas.
+
+### A página Biblioteca
+
+O botão **Biblioteca**, na barra, mostra todas as faixas com status, artista,
+álbum, gênero, playlists e local. Dá para buscar e filtrar por status. Com faixas
+selecionadas:
+
+| Ação | O que faz |
+|---|---|
+| **Mover para pasta…** | Move os arquivos para uma pasta escolhida e os **fixa** lá |
+| **Voltar à estrutura automática** | Tira a fixação; a próxima reorganização devolve as faixas às pastas automáticas |
+| **Baixar de novo** | Põe de volta na fila (uma faixa fixada volta para o mesmo lugar) |
+| **Remover da biblioteca…** | Tira da biblioteca, apagando ou não o arquivo; atualizar a playlist não a traz de volta |
+
+### Estrutura manual
+
+Faixa **fixada** é uma faixa cujo local foi escolhido por você. Ela fica onde
+está mesmo que a estrutura de pastas mude, e se for apagada é baixada de novo
+**no mesmo lugar**. Há três jeitos de fixar:
+
+- **Mover pelo programa** — *Mover para pasta…* na página Biblioteca.
+- **Mover no Explorer** — arraste os arquivos para onde quiser. No próximo
+  **Iniciar** ou **Verificar biblioteca**, o programa acha cada um pela tag e
+  passa a apontar para o novo lugar.
+- **Montar do zero** — ponha arquivos baixados por este programa em pastas suas e
+  clique em **Verificar biblioteca**: os que trouxerem a URL de origem entram no
+  catálogo, fixados onde estão.
+
+### Verificar biblioteca
+
+Compara o catálogo com o disco, nesta ordem:
+
+1. faixa que **mudou de pasta** → o catálogo passa a apontar para lá (e a fixa);
+2. faixa que **sumiu** → volta para a fila;
+3. arquivo que **o catálogo não conhecia** mas traz a URL de origem → entra na
+   biblioteca;
+4. áudio **sem origem** (baixado por outro programa) e músicas **duplicadas** →
+   listados no log, sem mexer em nada.
+
+Ao abrir o programa e a cada **Iniciar**, roda uma versão rápida: só confere se
+os arquivos existem, e lê as tags apenas se algo sumiu. Com a pasta num pen
+drive desconectado, nada é alterado — o programa avisa em vez de achar que você
+apagou tudo.
+
+### Mudar a estrutura sem baixar de novo
+
+Escolha a nova **Estrutura de pastas** e use *Menu → Biblioteca →* **Aplicar
+estrutura atual aos arquivos…**. Os arquivos mudam de pasta, nada é baixado, as
+faixas fixadas ficam onde estão e as pastas que ficarem vazias são removidas.
+Um arquivo nunca é sobrescrito: se o nome estiver ocupado, ganha o id do vídeo.
+
+### Reproduzir em outro pen drive
+
+*Menu → Biblioteca →* **Copiar para outro pen drive…** reproduz a biblioteca em
+outra pasta, com a mesma estrutura — inclusive a manual:
+
+- **Copiar arquivos**: copia o que existe aqui e deixa na fila o que faltar.
+- **Só a estrutura**: tudo será baixado no destino, nos mesmos locais. Útil
+  quando estes arquivos não estão à mão.
+
+No fim, o programa oferece trocar para o destino; aí **Iniciar** baixa lá o que
+faltar.
+
+Para levar a biblioteca a **outro computador**, use **Exportar biblioteca…**: um
+arquivo `.json` com cada música, a URL e o local. Do outro lado, escolha a pasta
+de destino, **Importar biblioteca…** e **Iniciar**. Os caminhos são gravados
+com `/`, então o arquivo vale entre Windows e Linux.
+
+### Os outros botões
+
+| Botão | O que faz | Apaga arquivos? |
+|---|---|---|
+| **Iniciar / Retomar** | Continua a fila. Antes, confere se os arquivos baixados ainda existem | Não |
+| **Verificar biblioteca** | A conferência completa descrita acima | Não |
+| *Menu → Fila →* **Tentar de novo as que falharam** | Devolve à fila as faixas que esgotaram as tentativas | Não |
+| *Menu → Fila →* **Atualizar lista da playlist** | Busca a playlist da URL de novo e acrescenta músicas novas | Não |
+| *Menu → Biblioteca →* **Esquecer a biblioteca…** | Esquece playlists, fila e histórico desta pasta, para recomeçar do zero | Não |
+
+Fechar o programa, parar no meio ou ser bloqueado não perde nada: o catálogo é
+gravado a cada faixa.
 
 ## Detecção de bloqueio
 
@@ -334,9 +403,11 @@ Metadados e capa são embutidos quando o formato de destino suporta.
 |---|---|
 | `main.py` | Ponto de entrada |
 | `pen_drive_maker/config.py` | `AppConfig` e validação |
-| `pen_drive_maker/store.py` | Fila persistente em SQLite |
+| `pen_drive_maker/store.py` | Catálogo da biblioteca em SQLite |
 | `pen_drive_maker/organizer.py` | Metadados → pastas, saneamento de nomes |
 | `pen_drive_maker/genre.py` | Consulta de gênero e cache |
+| `pen_drive_maker/library.py` | Biblioteca: reconhecer, conferir, mover, exportar, copiar |
+| `pen_drive_maker/biblioteca_ui.py` | Página da biblioteca e tarefas em segundo plano |
 | `pen_drive_maker/assinatura/` | Assinatura visual (tema, janela, ações) |
 | `pen_drive_maker/tools.py` | Localização do ffmpeg e do runtime JavaScript |
 | `pen_drive_maker/downloader.py` | Motor: extração, ritmo, bloqueios, download |
@@ -344,13 +415,16 @@ Metadados e capa são embutidos quando o formato de destino suporta.
 | `tests/test_engine.py` | Testes offline do motor (`yt-dlp` substituído) |
 | `tests/test_tools.py` | Testes da detecção de ferramentas externas |
 | `tests/test_genre.py` | Testes da consulta de gênero (sem rede) |
+| `tests/test_library.py` | Cenários de biblioteca, incluindo tags reais com ffmpeg |
+| `tests/test_sync.py` | Conferência entre o catálogo e o disco |
 | `tests/test_gui.py` | Testes da interface (Qt offscreen) |
 | `pyproject.toml` | Metadados do pacote e entry point `pen-drive-maker` |
 | `packaging.spec` | Receita do PyInstaller para o executável standalone |
 | `.github/workflows/release.yml` | Testes, build e publicação da release na tag |
 
-Dependências Python: `PySide6`, `yt-dlp` e `yt-dlp-ejs` (os scripts que
-resolvem os desafios JavaScript do YouTube).
+Dependências Python: `PySide6`, `yt-dlp`, `yt-dlp-ejs` (os scripts que
+resolvem os desafios JavaScript do YouTube) e `mutagen` (leitura das tags,
+que é como a biblioteca reconhece arquivos movidos).
 
 ### Ferramentas de terceiros embutidas
 

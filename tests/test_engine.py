@@ -41,9 +41,16 @@ class FakeYDL:
     calls = {"playlist": 0, "probe": 0, "download": 0}
     tracks: dict = {}
     failures: dict = {}
+    # Campos meta_* que chegaram ao "arquivo", por id de vídeo.
+    tags_gravadas: dict = {}
 
     def __init__(self, params):
         self.params = params
+        self._pre = []
+
+    def add_post_processor(self, pp, when="post_process"):
+        if when == "pre_process":
+            self._pre.append(pp)
 
     def __enter__(self):
         return self
@@ -74,13 +81,29 @@ class FakeYDL:
 
     def process_ie_result(self, info, download=True):
         FakeYDL.calls["download"] += 1
+        info = dict(info)
+        for pp in self._pre:  # como o yt-dlp: pre_process roda antes do download
+            _, info = pp.run(info)
+        meta = {k: v for k, v in info.items() if k.startswith("meta_")}
+        FakeYDL.tags_gravadas[info.get("id")] = meta
         template = self.params["outtmpl"]["default"]
         path = pathlib.Path((template % {"ext": "m4a"}).replace("%%", "%"))
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"audio")
+        # O "arquivo" carrega o id de origem só se a tag foi pedida, como o real.
+        conteudo = f"PDMID:{info.get('id')}" if meta.get("meta_comment") else "audio"
+        path.write_bytes(conteudo.encode())
         result = dict(info)
         result["requested_downloads"] = [{"filepath": str(path)}]
         return result
+
+
+def ler_id_do_dublê(caminho):
+    """Leitor de tag para os arquivos do FakeYDL (sem mutagen, sem ffmpeg)."""
+    try:
+        texto = pathlib.Path(caminho).read_text(errors="ignore")
+    except OSError:
+        return None
+    return texto[6:] if texto.startswith("PDMID:") else None
 
 
 class CookieErrorTypeTest(unittest.TestCase):
@@ -568,12 +591,12 @@ class EngineFlowTest(unittest.TestCase):
         self.assertIn("Album/01 - Artista - Musica 1.m4a", files)
         self.assertTrue(all(f.count("/") == 1 for f in files), files)
 
-    def test_each_level_lands_in_its_own_column(self):
-        """A coluna não pode depender da posição, senão a árvore mente."""
+    def test_tree_reflects_the_real_folders(self):
+        """A árvore vem dos caminhos no disco, não da posição das tags."""
         casos = {
-            "artist": ("", "Artista", ""),
-            "album": ("", "", "Album"),
-            "genre": ("Playlist de Teste", "", ""),
+            "artist": ("Artista",),
+            "album": ("Album",),
+            "genre": ("Playlist de Teste",),
         }
         for estrutura, esperado in casos.items():
             with self.subTest(estrutura=estrutura):
@@ -592,8 +615,7 @@ class EngineFlowTest(unittest.TestCase):
                 store = QueueStore(cfg.db_path())
                 try:
                     DownloadEngine(cfg, store, EngineCallbacks()).run()
-                    linhas = {(g, a, al) for g, a, al, _n in store.done_tree()}
-                    self.assertEqual(linhas, {esperado}, estrutura)
+                    self.assertEqual(store.folder_tree(), [(esperado, 5)], estrutura)
                 finally:
                     store.close()
 
@@ -601,8 +623,7 @@ class EngineFlowTest(unittest.TestCase):
         """A árvore da interface não pode mostrar pasta que não está no disco."""
         self.cfg.folder_structure = "genre"
         self._run()
-        for _genero, artista, album, _n in self.store.done_tree():
-            self.assertEqual((artista, album), ("", ""))
+        self.assertEqual(self.store.folder_tree(), [(("Playlist de Teste",), 5)])
 
     def test_duplicate_names_do_not_overwrite_each_other(self):
         """Com menos pastas, dois títulos iguais cairiam no mesmo arquivo."""

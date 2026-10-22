@@ -14,6 +14,7 @@ Estratégia contra bloqueio do servidor:
 
 from __future__ import annotations
 
+import os
 import random
 import re
 import threading
@@ -24,18 +25,14 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from yt_dlp import YoutubeDL
+from yt_dlp.postprocessor.common import PostProcessor
 from yt_dlp.cookies import CookieLoadError, load_cookies
 from yt_dlp.utils import DownloadError, ExtractorError
 
 from .config import AppConfig
 from .genre import GenreLookup
-from .organizer import (
-    FOLDER_LEVELS,
-    TrackTags,
-    build_relative_path,
-    resolve_tags,
-    sanitize_component,
-)
+from .library import reconcile
+from .organizer import TrackTags, build_relative_path, resolve_tags
 from .tools import (  # reexportados: a interface e os testes importam daqui
     describe_missing_ejs,
     describe_missing_ffmpeg,
@@ -245,6 +242,18 @@ def check_cookies(cfg: "AppConfig") -> Optional[str]:
             cfg, details + ["nenhum cookie foi encontrado na origem escolhida"]
         )
     return None
+
+
+class _TagInjector(PostProcessor):
+    """Põe no dicionário da faixa os campos `meta_*` que o yt-dlp grava nas tags."""
+
+    def __init__(self, campos: Dict[str, str]):
+        super().__init__()
+        self._campos = campos
+
+    def run(self, info):
+        info.update(self._campos)
+        return [], info
 
 
 class Stopped(Exception):
@@ -509,17 +518,22 @@ class DownloadEngine:
                     "Se ela fica num pen drive, conecte-o e abra de novo.",
                 )
             return 0
-        voltaram = self.store.verify_files()
-        if voltaram:
+        relatorio = reconcile(self.store, Path(self.cfg.output_dir).expanduser())
+        if relatorio.moved:
+            self._log(
+                "info",
+                f"{len(relatorio.moved)} faixa(s) mudaram de pasta; a biblioteca agora "
+                "aponta para onde elas estão.",
+            )
+        if relatorio.missing:
             self._log(
                 "warn",
-                f"{len(voltaram)} faixa(s) estavam marcadas como baixadas, mas o "
+                f"{len(relatorio.missing)} faixa(s) estavam marcadas como baixadas, mas o "
                 "arquivo não está mais no disco. Voltaram para a fila.",
             )
-            for item in voltaram[:5]:
-                self._log("debug", f"  de volta: {item.title or item.video_id}")
+        if relatorio.changed:
             self._emit_stats()
-        return len(voltaram)
+        return len(relatorio.missing)
 
     def _verify_environment(self) -> None:
         runtime = find_js_runtime()
@@ -560,17 +574,22 @@ class DownloadEngine:
 
     def _extract_playlist(self, force: bool = False) -> None:
         url = self.cfg.playlist_url.strip()
-        existing = self.store.get_playlist()
+        if not url:
+            # Sem URL o trabalho é completar a biblioteca: o que veio de uma
+            # importação, de uma cópia ou de faixas que sumiram do disco.
+            self._log("info", "Sem URL de playlist: baixando o que falta na biblioteca.")
+            return
+        existing = self.store.get_playlist_by_url(url)
         if (
             not force
             and existing is not None
-            and existing["url"] == url
-            and self.store.count() > 0
+            and self.store.playlist_size(existing["id"]) > 0
         ):
             self._log(
                 "info",
-                f"Playlist já extraída em {existing['extracted_at']} "
-                f"({self.store.count()} faixas). Retomando a fila existente.",
+                f'Playlist "{existing["title"]}" já está na biblioteca '
+                f"({self.store.playlist_size(existing['id'])} faixas). "
+                "Use 'Atualizar lista da playlist' para buscar músicas novas.",
             )
             return
 
@@ -601,16 +620,15 @@ class DownloadEngine:
             )
 
         title = info.get("title") or "Playlist"
-        if existing is not None and existing["url"] != url:
-            self._log("warn", "URL diferente da playlist anterior: a fila será recriada.")
-            self.store.clear_all()
-
-        self.store.set_playlist(url, title)
-        inserted = self.store.add_items(entries)
-        self._log(
-            "info",
-            f'Playlist "{title}": {len(entries)} faixas ({inserted} novas na fila).',
-        )
+        # Uma playlist nova se soma à biblioteca: faixas que outra playlist já
+        # trouxe ganham só o vínculo, e não são baixadas de novo.
+        playlist_id = self.store.add_playlist(url, title)
+        inserted = self.store.add_items(entries, playlist_id)
+        repetidas = len({e["video_id"] for e in entries}) - inserted
+        mensagem = f'Playlist "{title}": {len(entries)} faixas, {inserted} novas'
+        if repetidas:
+            mensagem += f", {repetidas} já estavam na biblioteca e não serão baixadas de novo"
+        self._log("info", mensagem + ".")
         self._emit_stats()
 
     def _flatten_entries(self, info: Dict[str, Any]):
@@ -673,7 +691,8 @@ class DownloadEngine:
             self.cfg.default_genre,
             self.cfg.default_album,
             self.cfg.genre_source,
-            self._playlist_genre,
+            # cada faixa usa a playlist que a trouxe, não a da URL atual
+            self.store.playlist_title_for(item.video_id) or self._playlist_genre,
         )
         if self._genre_lookup is not None and not self._genre_lookup.disabled:
             encontrado = self._genre_lookup.lookup(tags.artist, tags.title)
@@ -681,18 +700,26 @@ class DownloadEngine:
                 tags = replace(tags, genre=encontrado)
             else:
                 self._log("debug", f"Gênero não encontrado para {tags.artist} - {tags.title}")
-        outtmpl = self._outtmpl_for(tags, item.video_id)
-        self._log(
-            "info",
-            f"Destino: {sanitize_component(tags.genre, self.cfg.ascii_only)}/"
-            f"{sanitize_component(tags.artist, self.cfg.ascii_only)}/"
-            f"{sanitize_component(tags.album, self.cfg.ascii_only)}/",
-        )
+        raiz = Path(self.cfg.output_dir).expanduser().resolve()
+        if item.pinned and item.relpath:
+            # Local escolhido à mão (ou vindo de outra biblioteca): vale mais
+            # do que a estrutura de pastas configurada.
+            base = (raiz / item.relpath).with_suffix("")
+            outtmpl = str(base).replace("%", "%%") + ".%(ext)s"
+            self._log("info", f"Destino fixado: {item.relpath}")
+        else:
+            outtmpl = self._outtmpl_for(tags, item.video_id)
+            relativo = os.path.relpath(outtmpl.replace("%%", "%").replace(".%(ext)s", ""), raiz)
+            self._log("info", f"Destino: {Path(relativo).as_posix()}")
 
         # Reaproveita o dicionário já extraído (mesmo caminho do --load-info-json
         # do yt-dlp), então o download não faz uma segunda extração de página.
         payload = YoutubeDL.sanitize_info(info, remove_private_keys=True)
         with YoutubeDL(self._download_opts(outtmpl)) as ydl:
+            if self.cfg.embed_metadata:
+                ydl.add_post_processor(
+                    _TagInjector(self._campos_de_tag(tags, item)), when="pre_process"
+                )
             try:
                 result = ydl.process_ie_result(payload, download=True)
             except (Stopped, CookieLoadError):
@@ -706,6 +733,28 @@ class DownloadEngine:
 
         path = self._final_path(result)
         return path, tags
+
+    @staticmethod
+    def _campos_de_tag(tags: TrackTags, item: QueueItem) -> Dict[str, str]:
+        """Tags a gravar no arquivo, iguais às que decidiram a pasta.
+
+        Sem isto o yt-dlp grava como gênero a categoria do YouTube ("Music"),
+        e a pasta diz uma coisa enquanto o rádio do carro mostra outra. O
+        `comment` leva a URL de origem: é por ela que a biblioteca reconhece o
+        arquivo depois de movido.
+        """
+        origem = f"https://www.youtube.com/watch?v={item.video_id}"
+        campos = {
+            "meta_title": tags.title,
+            "meta_artist": tags.artist,
+            "meta_album": tags.album,
+            "meta_genre": tags.genre,
+            "meta_comment": origem,
+            "meta_purl": origem,
+        }
+        if tags.track_number:
+            campos["meta_track"] = str(tags.track_number)
+        return {k: str(v) for k, v in campos.items() if v}
 
     @staticmethod
     def _final_path(result: Optional[Dict[str, Any]]) -> str:
@@ -861,23 +910,12 @@ class DownloadEngine:
                 # Guarda os nomes já saneados: é o que existe de fato no disco.
                 # Guarda os níveis que existem de fato: sem a pasta de álbum,
                 # o banco e a árvore da interface não devem inventá-la.
-                # Cada nível vai para a sua coluna, qualquer que seja a
-                # estrutura: a árvore da interface lê por nome, não por posição.
-                nomes = FOLDER_LEVELS.get(
-                    self.cfg.folder_structure, FOLDER_LEVELS["genre_artist_album"]
+                # Grava as tags reais: a árvore lê os caminhos, e reorganizar
+                # para outra estrutura precisa saber artista e álbum de verdade.
+                self.store.mark_done(
+                    item.video_id, path, tags.genre, tags.artist, tags.album,
+                    tags.title, tags.track_number,
                 )
-                valores = {
-                    nome: sanitize_component(
-                        parte, self.cfg.ascii_only, self.cfg.max_component_len
-                    )
-                    for nome, parte in zip(
-                        nomes, tags.folder_parts(self.cfg.folder_structure)
-                    )
-                }
-                genre = valores.get("genre", "")
-                artist = valores.get("artist", "")
-                album = valores.get("album", "")
-                self.store.mark_done(item.video_id, path, genre, artist, album, tags.title)
                 self._log(
                     "ok",
                     f"OK em {time.monotonic() - started:.0f}s: {path or '(caminho não informado)'}",

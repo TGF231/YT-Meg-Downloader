@@ -3,6 +3,60 @@
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o
 versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
+## [2.0.0] - 2026-10-22
+
+A pasta de saída deixa de ser uma fila de uma playlist e passa a ser uma
+**biblioteca**: um catálogo de músicas, cada uma ligada à URL de onde veio e ao
+lugar onde foi salva.
+
+### Migração
+
+- O banco de uma versão 1.x é convertido sozinho na primeira abertura, sem
+  perder nada: a playlist vira a primeira da biblioteca, status, tentativas e
+  erros são mantidos, e os caminhos ganham a forma relativa. Abrir de novo não
+  duplica nada.
+
+### Alterado
+
+- **Uma URL nova não apaga mais o histórico.** Antes, trocar de playlist
+  esvaziava a fila da anterior. Agora a playlist se soma à biblioteca, e
+  músicas que outra já trouxe não são baixadas de novo.
+- A árvore de pastas vem dos caminhos reais dos arquivos, não das tags: com
+  estrutura manual, só o caminho diz como a biblioteca está organizada.
+- O arquivo passa a levar nas tags o mesmo gênero da pasta. Antes o yt-dlp
+  gravava a categoria do YouTube ("Music"), e o rádio mostrava outra coisa.
+- Com a URL vazia, **Iniciar** completa a biblioteca em vez de recusar.
+
+### Adicionado
+
+- **Reconhecimento pela tag.** A URL de origem vai gravada em cada arquivo, e a
+  biblioteca a lê de volta: um arquivo movido no Explorer é achado no novo
+  lugar em vez de baixado de novo.
+- **Faixas fixadas.** Local escolhido por você: fica onde está mesmo que a
+  estrutura mude, e se for apagada volta para o mesmo lugar.
+- **Página Biblioteca**, com busca, filtro por status e ações sobre a seleção:
+  mover para pasta, voltar à estrutura automática, baixar de novo e remover.
+- **Verificar biblioteca**: acha faixas movidas, devolve à fila as apagadas,
+  adota arquivos postos à mão que trazem a URL de origem e lista áudio sem
+  origem e duplicatas.
+- **Aplicar estrutura atual aos arquivos**: muda os arquivos de pasta conforme
+  a estrutura escolhida, sem baixar nada.
+- **Copiar para outro pen drive**: reproduz a biblioteca com a mesma estrutura,
+  copiando o que existe e deixando na fila o que faltar.
+- **Exportar e importar** a biblioteca num arquivo `.json`, para levá-la a
+  outro computador. Os caminhos usam `/` e valem entre sistemas.
+- Removidas ficam marcadas no catálogo: atualizar a playlist não as traz de
+  volta.
+- Nova dependência: `mutagen`, para ler as tags. Importada no topo do módulo,
+  de propósito: se faltar num executável, o programa falha ao abrir em vez de
+  tratar todo arquivo como desconhecido e rebaixar tudo.
+- Tarefas longas de biblioteca rodam numa thread, com progresso, sem congelar a
+  janela.
+
+### Corrigido
+
+- A seção de botões do README ainda usava os nomes antigos de antes da 1.6.0.
+
 ## [1.6.0] - 2026-10-22
 
 ### Corrigido
@@ -283,9 +337,11 @@ Primeira versão.
 - Interface PySide6 com contadores, barras de progresso, log colorido, árvore
   da estrutura de pastas criada e controles de pausar, retomar e parar.
 
+[2.0.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v2.0.0
 [1.6.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.6.0
 [1.5.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.5.0
 [1.4.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.4.0
+[2.0.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v2.0.0
 [1.6.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.6.0
 [1.5.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.5.0
 [1.4.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.4.0
