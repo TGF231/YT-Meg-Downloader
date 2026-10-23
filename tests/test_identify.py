@@ -160,5 +160,110 @@ class IdentificarTest(unittest.TestCase):
         self.assertEqual(self.store.get_item("zzz").status, STATUS_DONE)
 
 
+class RefinarTest(unittest.TestCase):
+    def setUp(self):
+        from pen_drive_maker.config import AppConfig
+
+        self.raiz = pathlib.Path(tempfile.mkdtemp())
+        self.store = QueueStore(self.raiz / ".pen-drive-maker" / "queue.db")
+        self.cfg = AppConfig(output_dir=str(self.raiz), genre_source="metadata")
+        self.cfg.normalize()
+
+    def tearDown(self):
+        self.store.close()
+
+    def _vinculado(self, nome="Daft Punk - One More Time.mp3"):
+        (self.raiz / nome).write_bytes(b"x")  # não é áudio de verdade
+        c = ident.Combinacao(nome, ident.Palpite("Daft Punk", "One More Time"), "abc",
+                             "https://www.youtube.com/watch?v=abc", "t", "c", 0.95)
+        ident.vincular(self.store, self.raiz, c)
+        return c
+
+    def test_file_goes_to_the_ideal_folder_with_the_ideal_name(self):
+        c = self._vinculado()
+        info = {"id": "abc", "track": "One More Time", "artist": "Daft Punk",
+                "album": "Discovery", "genre": "Electronic", "track_number": 1}
+        r = ident.refinar(self.store, self.raiz, c, self.cfg, lambda url: info)
+        self.assertTrue(r.movido)
+        self.assertEqual(r.relpath, "Electronic/Daft Punk/Discovery/01 - One More Time.mp3")
+        self.assertTrue((self.raiz / r.relpath).is_file())
+        self.assertFalse((self.raiz / c.relpath).exists())
+        item = self.store.get_item("abc")
+        self.assertEqual((item.relpath, item.pinned, item.album), (r.relpath, False, "Discovery"))
+
+    def test_clean_filename_beats_a_messy_video_title(self):
+        c = self._vinculado()
+        info = {"id": "abc", "title": "DAFT PUNK ONE MORE TIME (OFFICIAL VIDEO) HD!!!",
+                "uploader": "Canal Qualquer"}
+        r = ident.refinar(self.store, self.raiz, c, self.cfg, lambda url: info)
+        self.assertEqual((r.tags.artist, r.tags.title), ("Daft Punk", "One More Time"))
+
+    def test_a_failed_lookup_leaves_the_file_linked_in_place(self):
+        c = self._vinculado()
+
+        def quebra(url):
+            raise RuntimeError("HTTP 429")
+
+        lote = ident.refinar_lote(self.store, self.raiz, [c], self.cfg, ler_info=quebra, pausa=0)
+        self.assertEqual((len(lote.feitos), len(lote.falhas)), (0, 1))
+        self.assertTrue((self.raiz / c.relpath).is_file())
+        self.assertEqual(self.store.get_item("abc").relpath, c.relpath)
+
+    def test_an_occupied_name_is_never_overwritten(self):
+        c = self._vinculado()
+        info = {"id": "abc", "track": "One More Time", "artist": "Daft Punk",
+                "album": "Discovery", "genre": "Electronic"}
+        ocupado = self.raiz / "Electronic" / "Daft Punk" / "Discovery" / "One More Time.mp3"
+        ocupado.parent.mkdir(parents=True)
+        ocupado.write_bytes(b"outro")
+        r = ident.refinar(self.store, self.raiz, c, self.cfg, lambda url: info)
+        self.assertEqual(ocupado.read_bytes(), b"outro")
+        self.assertIn("[abc]", r.relpath)
+
+
+import os  # noqa: E402
+import shutil  # noqa: E402
+import subprocess  # noqa: E402
+
+
+def _ffmpeg():
+    for candidato in (shutil.which("ffmpeg"), os.environ.get("PDM_TEST_FFMPEG")):
+        if candidato and os.path.isfile(candidato):
+            return candidato
+    return None
+
+
+@unittest.skipIf(_ffmpeg() is None, "ffmpeg indisponível")
+class GravarTagsDeVerdadeTest(unittest.TestCase):
+    def test_tags_and_origin_url_are_written_in_every_format(self):
+        from pen_drive_maker.organizer import TrackTags
+
+        pasta = pathlib.Path(tempfile.mkdtemp())
+        tags = TrackTags(genre="Eletronica", artist="Daft Punk", album="Discovery",
+                         title="One More Time", track_number=1)
+        for extensao in ("mp3", "m4a", "opus", "flac"):
+            arquivo = pasta / f"x.{extensao}"
+            subprocess.run([_ffmpeg(), "-loglevel", "error", "-f", "lavfi", "-i",
+                            "sine=frequency=440:duration=1", "-metadata", "title=lixo",
+                            str(arquivo)], check=True)
+            with self.subTest(formato=extensao):
+                self.assertTrue(ident.write_tags(
+                    arquivo, tags, "https://www.youtube.com/watch?v=pIWaVJPl0-c"))
+                self.assertEqual(library.read_video_id(arquivo), "pIWaVJPl0-c")
+                lidas = library.read_tags(arquivo)
+                self.assertEqual(lidas["title"], "One More Time")
+                self.assertEqual(lidas["artist"], "Daft Punk")
+                self.assertEqual(lidas["album"], "Discovery")
+                self.assertEqual(lidas["genre"], "Eletronica")
+                self.assertEqual(lidas["track"], 1)
+
+    def test_a_non_audio_file_is_reported_not_crashed(self):
+        from pen_drive_maker.organizer import TrackTags
+
+        arquivo = pathlib.Path(tempfile.mkdtemp()) / "x.mp3"
+        arquivo.write_bytes(b"nao e audio")
+        self.assertFalse(ident.write_tags(arquivo, TrackTags("g", "a", "b", "t"), "u"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -254,7 +254,7 @@ os arquivos existem, e lê as tags apenas se algo sumiu. Com a pasta num pen
 drive desconectado, nada é alterado — o programa avisa em vez de achar que você
 apagou tudo.
 
-### Identificar arquivos soltos
+### Identificar e organizar arquivos soltos
 
 Músicas postas na pasta sem nenhuma origem registrada (outro programa, sem
 metadados, nomes sem padrão) não fazem parte do catálogo. Use *Menu →
@@ -263,17 +263,25 @@ uma pista a partir das tags (artista e título) ou do nome (`Artista - Título`,
 ignorando número de faixa e `(Official Video)`), busca no YouTube pela API do
 yt-dlp e compara título, artista e duração.
 
-- correspondência **clara** → o arquivo é vinculado à URL, fica onde está e passa
-  a valer para reorganizar, copiar e exportar;
+- correspondência **clara** → o arquivo é vinculado à URL e **organizado**: o
+  programa lê os metadados da música no YouTube, grava as tags (título, artista,
+  álbum, gênero, faixa e a URL de origem, sem perder a capa já embutida),
+  renomeia e move para a pasta da **estrutura escolhida**, com a mesma regra de
+  gênero dos downloads. Nada é baixado de novo, então a qualidade do seu arquivo
+  é preservada;
 - correspondência **incerta** → uma janela mostra arquivo × resultado e só
-  vincula o que você marcar;
+  organiza o que você marcar;
 - **sem resultado** ou música que a biblioteca já tem em outro arquivo → listado
   no log, nada é alterado.
 
-Os arquivos nunca são modificados, movidos ou apagados. A busca tem intervalo
-entre as consultas, pode ser cancelada e para sozinha se várias falharem
-seguidas (rede ou bloqueio). Sem nome nem tags aproveitáveis, o programa não
-consegue adivinhar: esses ficam sem vínculo.
+Como a URL fica gravada dentro do arquivo, ele continua reconhecido mesmo se o
+catálogo for apagado. Um nome já ocupado nunca é sobrescrito (o arquivo ganha o
+id do vídeo). Se o YouTube não devolver os metadados de uma música, o arquivo
+continua vinculado no lugar onde estava. Tags só são gravadas em mp3, m4a/mp4,
+opus, ogg e flac; outros formatos são apenas renomeados e movidos. A busca tem
+intervalo entre as consultas, pode ser cancelada e para sozinha se várias
+falharem seguidas (rede ou bloqueio). Sem nome nem tags aproveitáveis, o
+programa não consegue adivinhar: esses ficam sem vínculo.
 
 ### Mudar a estrutura sem baixar de novo
 

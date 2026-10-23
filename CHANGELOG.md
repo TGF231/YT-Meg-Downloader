@@ -7,10 +7,12 @@ versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
 ### Adicionado
 
-- **Identificar arquivos soltos** (*Biblioteca*): músicas sem origem conhecida
-  são buscadas no YouTube pelas tags ou pelo nome `Artista - Título` e
-  vinculadas a uma URL quando título, artista e duração batem. Correspondências
-  incertas são confirmadas por você numa janela; os arquivos nunca são alterados.
+- **Identificar e organizar arquivos soltos** (*Biblioteca*): músicas sem origem
+  conhecida são buscadas no YouTube pelas tags ou pelo nome `Artista - Título`.
+  Quando título, artista e duração batem, o arquivo é vinculado à URL, recebe
+  tags corretas (com a URL de origem), é renomeado e movido para a pasta da
+  estrutura escolhida, sem baixar de novo. Correspondências incertas só são
+  aplicadas se você confirmar.
 - **Cancelar tarefa**: interrompe verificação, cópia, reorganização ou
   identificação em andamento.
 

@@ -42,7 +42,7 @@ from .assinatura.janela import JanelaBase
 from .biblioteca_ui import PaginaBiblioteca, TarefaThread
 from .config import AUDIO_FORMATS, BROWSERS, AppConfig
 from .downloader import DownloadEngine, EngineCallbacks, check_cookies
-from .identify import find_loose, identify, vincular
+from .identify import find_loose, identify, refinar_lote, vincular
 from .library import (
     ImportError_,
     copy_library,
@@ -781,17 +781,45 @@ class MainWindow(JanelaBase):
                 "conecte-o e tente de novo.",
             )
             return
+        if not self._perguntar(
+            "Identificar e organizar arquivos soltos",
+            "Procurar os arquivos soltos no YouTube e organizá-los?",
+            "Cada música reconhecida recebe tags corretas (título, artista, álbum, "
+            "gênero e a URL de origem), é renomeada e movida para a pasta da estrutura "
+            "escolhida. A capa já embutida é mantida. Correspondências incertas só "
+            "são aplicadas se você confirmar; o resto não é tocado.",
+            "Identificar e organizar",
+        ):
+            return
+        cfg = self.config_atual()
 
         def tarefa(progresso, stop):
             soltos = find_loose(store, raiz, progresso, stop)
             if stop.is_set() or not soltos:
-                return soltos, None
-            return soltos, identify(store, raiz, soltos, progresso=progresso, stop=stop)
+                return soltos, None, None
+            relatorio = identify(store, raiz, soltos, progresso=progresso, stop=stop)
+            lote = refinar_lote(store, raiz, relatorio.linked, cfg, progresso=progresso,
+                                stop=stop)
+            return soltos, relatorio, lote
 
         self._rodar_tarefa("Identificando arquivos soltos", tarefa, self._relatar_identificacao)
 
+    def _relatar_lote(self, lote) -> None:
+        movidos = sum(1 for _c, r in lote.feitos if r.movido)
+        sem_tag = sum(1 for _c, r in lote.feitos if not r.gravou_tags)
+        self.registrar("ok" if lote.feitos else "info",
+                       f"{len(lote.feitos)} arquivo(s) organizados, {movidos} movidos de pasta.")
+        if sem_tag:
+            self.registrar("warn", f"{sem_tag} arquivo(s) de formato sem suporte a tags "
+                                   "foram só renomeados/movidos.")
+        for combinacao, motivo in lote.falhas[:10]:
+            self.registrar("error", f"Não organizado ({combinacao.relpath}): {motivo}")
+        if lote.falhas:
+            self.registrar("warn", "Esses arquivos continuam vinculados, no lugar onde estavam; "
+                                   "use 'Aplicar estrutura atual' depois para movê-los.")
+
     def _relatar_identificacao(self, resultado) -> None:
-        soltos, relatorio = resultado
+        soltos, relatorio, lote = resultado
         if not soltos:
             self.registrar("ok", "Nenhum arquivo solto: tudo na biblioteca tem origem conhecida.")
             return
@@ -799,7 +827,8 @@ class MainWindow(JanelaBase):
             self.registrar("warn", "Identificação cancelada.")
             return
         self.registrar("ok" if relatorio.linked else "info",
-                       f"{len(relatorio.linked)} de {len(soltos)} arquivo(s) vinculados a uma URL.")
+                       f"{len(relatorio.linked)} de {len(soltos)} arquivo(s) reconhecidos.")
+        self._relatar_lote(lote)
         for achado in relatorio.duplicates[:10]:
             self.registrar("warn", f"Já na biblioteca, não vinculado: {achado.relpath} "
                                    f"(é '{achado.titulo_achado}')")
@@ -812,14 +841,24 @@ class MainWindow(JanelaBase):
         if relatorio.interrupted:
             self.registrar("warn", "Identificação interrompida antes do fim; "
                                    "rode de novo para continuar do que falta.")
+        self._recarregar_biblioteca()
         if relatorio.doubtful:
             aceitas = self._confirmar_duvidas(relatorio.doubtful)
-            raiz = self._raiz()
-            for achado in aceitas:
-                vincular(self.store, raiz, achado)
             self.registrar("info", f"{len(aceitas)} de {len(relatorio.doubtful)} "
                                    "correspondência(s) incertas confirmadas.")
-        self._recarregar_biblioteca()
+            if aceitas:
+                self._organizar_confirmadas(aceitas)
+
+    def _organizar_confirmadas(self, aceitas) -> None:
+        store, raiz, cfg = self.store, self._raiz(), self.config_atual()
+        for achado in aceitas:
+            vincular(store, raiz, achado)
+        self._rodar_tarefa(
+            "Organizando as confirmadas",
+            lambda progresso, stop: refinar_lote(store, raiz, aceitas, cfg,
+                                                 progresso=progresso, stop=stop),
+            self._relatar_lote,
+        )
 
     def _confirmar_duvidas(self, duvidas) -> list:
         """Mostra arquivo × resultado achado; devolve só o que o usuário marcou."""

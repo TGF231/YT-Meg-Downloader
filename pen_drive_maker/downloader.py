@@ -244,6 +244,17 @@ def check_cookies(cfg: "AppConfig") -> Optional[str]:
     return None
 
 
+def auth_opts(cfg: "AppConfig") -> Dict[str, Any]:
+    """Opções de cookies do yt-dlp para a configuração."""
+    opts: Dict[str, Any] = {}
+    if cfg.cookies_mode == "file" and cfg.cookies_file:
+        opts["cookiefile"] = str(Path(cfg.cookies_file).expanduser())
+    elif cfg.cookies_mode == "browser" and cfg.cookies_browser:
+        # Formato esperado: (navegador, perfil, keyring, container)
+        opts["cookiesfrombrowser"] = (cfg.cookies_browser, None, None, None)
+    return opts
+
+
 class _TagInjector(PostProcessor):
     """Põe no dicionário da faixa os campos `meta_*` que o yt-dlp grava nas tags."""
 
@@ -412,13 +423,7 @@ class DownloadEngine:
     # -------------------------------------------------------- opções do yt-dlp
 
     def _auth_opts(self) -> Dict[str, Any]:
-        opts: Dict[str, Any] = {}
-        if self.cfg.cookies_mode == "file" and self.cfg.cookies_file:
-            opts["cookiefile"] = str(Path(self.cfg.cookies_file).expanduser())
-        elif self.cfg.cookies_mode == "browser" and self.cfg.cookies_browser:
-            # Formato esperado: (navegador, perfil, keyring, container)
-            opts["cookiesfrombrowser"] = (self.cfg.cookies_browser, None, None, None)
-        return opts
+        return auth_opts(self.cfg)
 
     def _base_opts(self) -> Dict[str, Any]:
         opts: Dict[str, Any] = {

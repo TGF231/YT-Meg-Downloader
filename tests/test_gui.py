@@ -238,7 +238,12 @@ class JanelaTest(unittest.TestCase):
             "Sure Song One": [{"id": "ok1", "title": "Sure - Song One", "channel": "Sure"}],
             "Maybe Song Two": [{"id": "dv1", "title": "Song Two (cover)", "channel": "Other"}],
         }
-        real = (gui.identify, library.read_video_id)
+        real = (gui.identify, library.read_video_id, gui.refinar_lote)
+        infos = {"ok1": {"id": "ok1", "track": "Song One", "artist": "Sure", "album": "Alb"}}
+        gui.refinar_lote = lambda store, raiz_, comb, cfg, **kw: ident.refinar_lote(
+            store, raiz_, comb, cfg, ler_info=lambda url: infos.get(url.split("=")[-1], {}),
+            progresso=kw.get("progresso"), stop=kw.get("stop"), pausa=0)
+        self.w._perguntar = lambda *a: True
         gui.identify = lambda store, raiz_, rels, **kw: ident.identify(
             store, raiz_, rels, busca=lambda c: respostas.get(c, []), pausa=0,
             progresso=kw.get("progresso"), stop=kw.get("stop"))
@@ -250,13 +255,18 @@ class JanelaTest(unittest.TestCase):
             self.w.identificar_soltos()
             self._aguardar_tarefa()
         finally:
-            gui.identify, library.read_video_id = real
-        self.assertEqual(self.w.store.get_item("ok1").relpath, "Sure - Song One.mp3")
+            gui.identify, library.read_video_id, gui.refinar_lote = real
+        organizado = self.w.store.get_item("ok1")
+        self.assertNotEqual(organizado.relpath, "Sure - Song One.mp3", "deveria ter ido para a pasta ideal")
+        self.assertIn("Sure", organizado.relpath)
+        self.assertTrue((raiz / organizado.relpath).is_file())
+        self.assertFalse((raiz / "Sure - Song One.mp3").exists())
         self.assertEqual(len(perguntadas), 1)
         self.assertIsNotNone(self.w.store.get_item("dv1"), "a dúvida confirmada deveria vincular")
 
     def test_identify_with_nothing_loose_says_so(self):
         self._fila_com_arquivos()
+        self.w._perguntar = lambda *a: True
         self.w.identificar_soltos()
         self._aguardar_tarefa()
         self.assertIn("nenhum arquivo solto", self.w.log_view.toPlainText().lower())
