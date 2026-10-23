@@ -3,6 +3,22 @@
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o
 versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
+## [2.1.0] - 2026-10-23
+
+### Adicionado
+
+- **Identificar arquivos soltos** (*Biblioteca*): músicas sem origem conhecida
+  são buscadas no YouTube pelas tags ou pelo nome `Artista - Título` e
+  vinculadas a uma URL quando título, artista e duração batem. Correspondências
+  incertas são confirmadas por você numa janela; os arquivos nunca são alterados.
+- **Cancelar tarefa**: interrompe verificação, cópia, reorganização ou
+  identificação em andamento.
+
+### Alterado
+
+- Arquivos vinculados à mão não aparecem mais como "sem origem conhecida" na
+  verificação da biblioteca.
+
 ## [2.0.0] - 2026-10-22
 
 A pasta de saída deixa de ser uma fila de uma playlist e passa a ser uma
@@ -337,6 +353,7 @@ Primeira versão.
 - Interface PySide6 com contadores, barras de progresso, log colorido, árvore
   da estrutura de pastas criada e controles de pausar, retomar e parar.
 
+[2.1.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v2.1.0
 [2.0.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v2.0.0
 [1.6.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.6.0
 [1.5.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.5.0

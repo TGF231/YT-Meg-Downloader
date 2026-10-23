@@ -26,6 +26,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSpinBox,
     QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -40,6 +42,7 @@ from .assinatura.janela import JanelaBase
 from .biblioteca_ui import PaginaBiblioteca, TarefaThread
 from .config import AUDIO_FORMATS, BROWSERS, AppConfig
 from .downloader import DownloadEngine, EngineCallbacks, check_cookies
+from .identify import find_loose, identify, vincular
 from .library import (
     ImportError_,
     copy_library,
@@ -221,6 +224,8 @@ class MainWindow(JanelaBase):
              separador=True),
         Acao("act_pausar", "Pausar", "alternar_pausa", quando="rodando", onde=BARRA),
         Acao("act_parar", "Parar", "parar", quando="rodando", onde=BARRA),
+        Acao("act_cancelar_tarefa", "Cancelar tarefa", "cancelar_tarefa", quando="ocupado",
+             onde=BARRA),
         Acao("act_verificar", "Verificar biblioteca", "verificar_arquivos", quando="parado",
              onde=BARRA, separador=True),
         Acao("act_requeue", "Tentar de novo as que falharam", "reenfileirar",
@@ -228,6 +233,8 @@ class MainWindow(JanelaBase):
         Acao("act_reextrair", "Atualizar lista da playlist", "reextrair", quando="parado",
              onde="fila"),
         Acao("act_reorganizar", "Aplicar estrutura atual aos arquivos…", "reorganizar",
+             quando="parado", onde="biblioteca"),
+        Acao("act_identificar", "Identificar arquivos soltos…", "identificar_soltos",
              quando="parado", onde="biblioteca"),
         Acao("act_exportar", "Exportar biblioteca…", "exportar", quando="parado",
              onde="biblioteca", separador=True),
@@ -287,6 +294,11 @@ class MainWindow(JanelaBase):
         "act_reorganizar": (
             "Move os arquivos já baixados para a estrutura de pastas escolhida, sem "
             "baixar de novo. Faixas fixadas ficam onde estão."
+        ),
+        "act_cancelar_tarefa": "Interrompe a tarefa de biblioteca em andamento.",
+        "act_identificar": (
+            "Procura no YouTube os arquivos sem origem conhecida (pelo nome 'Artista - "
+            "Título' ou pelas tags) e vincula a URL. O que for incerto, você confirma."
         ),
         "act_exportar": (
             "Grava a biblioteca — cada música e o local dela — num arquivo, para "
@@ -751,6 +763,98 @@ class MainWindow(JanelaBase):
             self.registrar("warn", f"Mesma música em mais de um lugar: {', '.join(caminhos)}")
         if not (relatorio.changed or relatorio.unknown or relatorio.duplicates):
             self.registrar("ok", "Biblioteca conferida: tudo no lugar.")
+
+    def cancelar_tarefa(self) -> None:
+        if self._tarefa is not None and self._tarefa.isRunning():
+            self._tarefa.stop.set()
+            self.registrar("warn", "Cancelamento pedido; terminando o item atual...")
+
+    def identificar_soltos(self) -> None:
+        store = self._store_para_leitura()
+        if store is None:
+            return
+        raiz = self._raiz()
+        if not raiz.is_dir():
+            QMessageBox.warning(
+                self, "Pasta da biblioteca não encontrada",
+                "A pasta da biblioteca não existe agora. Se ela fica num pen drive, "
+                "conecte-o e tente de novo.",
+            )
+            return
+
+        def tarefa(progresso, stop):
+            soltos = find_loose(store, raiz, progresso, stop)
+            if stop.is_set() or not soltos:
+                return soltos, None
+            return soltos, identify(store, raiz, soltos, progresso=progresso, stop=stop)
+
+        self._rodar_tarefa("Identificando arquivos soltos", tarefa, self._relatar_identificacao)
+
+    def _relatar_identificacao(self, resultado) -> None:
+        soltos, relatorio = resultado
+        if not soltos:
+            self.registrar("ok", "Nenhum arquivo solto: tudo na biblioteca tem origem conhecida.")
+            return
+        if relatorio is None:
+            self.registrar("warn", "Identificação cancelada.")
+            return
+        self.registrar("ok" if relatorio.linked else "info",
+                       f"{len(relatorio.linked)} de {len(soltos)} arquivo(s) vinculados a uma URL.")
+        for achado in relatorio.duplicates[:10]:
+            self.registrar("warn", f"Já na biblioteca, não vinculado: {achado.relpath} "
+                                   f"(é '{achado.titulo_achado}')")
+        if relatorio.not_found:
+            self.registrar("warn", f"{len(relatorio.not_found)} arquivo(s) sem correspondência:")
+            for caminho in relatorio.not_found[:10]:
+                self.registrar("warn", f"  {caminho}")
+        if relatorio.failed:
+            self.registrar("error", f"{relatorio.failed} busca(s) falharam (rede ou bloqueio).")
+        if relatorio.interrupted:
+            self.registrar("warn", "Identificação interrompida antes do fim; "
+                                   "rode de novo para continuar do que falta.")
+        if relatorio.doubtful:
+            aceitas = self._confirmar_duvidas(relatorio.doubtful)
+            raiz = self._raiz()
+            for achado in aceitas:
+                vincular(self.store, raiz, achado)
+            self.registrar("info", f"{len(aceitas)} de {len(relatorio.doubtful)} "
+                                   "correspondência(s) incertas confirmadas.")
+        self._recarregar_biblioteca()
+
+    def _confirmar_duvidas(self, duvidas) -> list:
+        """Mostra arquivo × resultado achado; devolve só o que o usuário marcou."""
+        dialogo = QDialog(self)
+        dialogo.setWindowTitle("Confirmar correspondências")
+        layout = QVBoxLayout(dialogo)
+        layout.addWidget(QLabel(
+            "Estas correspondências são incertas. Marque só as que estiverem certas."
+        ))
+        tabela = QTableWidget(len(duvidas), 4)
+        tabela.setHorizontalHeaderLabels(["Arquivo", "Encontrado no YouTube", "Canal", "Confiança"])
+        for linha, achado in enumerate(duvidas):
+            marca = QTableWidgetItem(achado.relpath)
+            marca.setFlags(marca.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            marca.setCheckState(Qt.CheckState.Unchecked)
+            tabela.setItem(linha, 0, marca)
+            tabela.setItem(linha, 1, QTableWidgetItem(achado.titulo_achado))
+            tabela.setItem(linha, 2, QTableWidgetItem(achado.canal))
+            tabela.setItem(linha, 3, QTableWidgetItem(f"{achado.pontos:.0%}"))
+        tabela.horizontalHeader().setStretchLastSection(True)
+        tabela.resizeColumnsToContents()
+        layout.addWidget(tabela)
+        botoes = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        botoes.accepted.connect(dialogo.accept)
+        botoes.rejected.connect(dialogo.reject)
+        layout.addWidget(botoes)
+        dialogo.resize(900, 420)
+        if dialogo.exec() != QDialog.DialogCode.Accepted:
+            return []
+        return [
+            achado for linha, achado in enumerate(duvidas)
+            if tabela.item(linha, 0).checkState() == Qt.CheckState.Checked
+        ]
 
     def reorganizar(self) -> None:
         store = self._store_para_leitura()

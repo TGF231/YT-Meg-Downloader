@@ -227,6 +227,40 @@ class JanelaTest(unittest.TestCase):
         self._aguardar_tarefa()
         self.assertIn("tudo no lugar", self.w.log_view.toPlainText())
 
+    def test_identify_loose_files_links_sure_ones_and_asks_about_doubtful(self):
+        import pen_drive_maker.gui as gui
+        from pen_drive_maker import identify as ident, library
+
+        raiz, _ = self._fila_com_arquivos()
+        (raiz / "Sure - Song One.mp3").write_bytes(b"x")
+        (raiz / "Maybe - Song Two.mp3").write_bytes(b"x")
+        respostas = {
+            "Sure Song One": [{"id": "ok1", "title": "Sure - Song One", "channel": "Sure"}],
+            "Maybe Song Two": [{"id": "dv1", "title": "Song Two (cover)", "channel": "Other"}],
+        }
+        real = (gui.identify, library.read_video_id)
+        gui.identify = lambda store, raiz_, rels, **kw: ident.identify(
+            store, raiz_, rels, busca=lambda c: respostas.get(c, []), pausa=0,
+            progresso=kw.get("progresso"), stop=kw.get("stop"))
+        library.read_video_id = lambda c: (
+            c.read_text().split(":")[1] if c.read_text().startswith("PDMID:") else None)
+        perguntadas = []
+        self.w._confirmar_duvidas = lambda duvidas: perguntadas.extend(duvidas) or duvidas
+        try:
+            self.w.identificar_soltos()
+            self._aguardar_tarefa()
+        finally:
+            gui.identify, library.read_video_id = real
+        self.assertEqual(self.w.store.get_item("ok1").relpath, "Sure - Song One.mp3")
+        self.assertEqual(len(perguntadas), 1)
+        self.assertIsNotNone(self.w.store.get_item("dv1"), "a dúvida confirmada deveria vincular")
+
+    def test_identify_with_nothing_loose_says_so(self):
+        self._fila_com_arquivos()
+        self.w.identificar_soltos()
+        self._aguardar_tarefa()
+        self.assertIn("nenhum arquivo solto", self.w.log_view.toPlainText().lower())
+
     # ---- página da biblioteca ---------------------------------------------
 
     def _abrir_biblioteca(self):

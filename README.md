@@ -254,6 +254,27 @@ os arquivos existem, e lê as tags apenas se algo sumiu. Com a pasta num pen
 drive desconectado, nada é alterado — o programa avisa em vez de achar que você
 apagou tudo.
 
+### Identificar arquivos soltos
+
+Músicas postas na pasta sem nenhuma origem registrada (outro programa, sem
+metadados, nomes sem padrão) não fazem parte do catálogo. Use *Menu →
+Biblioteca →* **Identificar arquivos soltos…**: para cada uma, o programa monta
+uma pista a partir das tags (artista e título) ou do nome (`Artista - Título`,
+ignorando número de faixa e `(Official Video)`), busca no YouTube pela API do
+yt-dlp e compara título, artista e duração.
+
+- correspondência **clara** → o arquivo é vinculado à URL, fica onde está e passa
+  a valer para reorganizar, copiar e exportar;
+- correspondência **incerta** → uma janela mostra arquivo × resultado e só
+  vincula o que você marcar;
+- **sem resultado** ou música que a biblioteca já tem em outro arquivo → listado
+  no log, nada é alterado.
+
+Os arquivos nunca são modificados, movidos ou apagados. A busca tem intervalo
+entre as consultas, pode ser cancelada e para sozinha se várias falharem
+seguidas (rede ou bloqueio). Sem nome nem tags aproveitáveis, o programa não
+consegue adivinhar: esses ficam sem vínculo.
+
 ### Mudar a estrutura sem baixar de novo
 
 Escolha a nova **Estrutura de pastas** e use *Menu → Biblioteca →* **Aplicar
@@ -407,6 +428,7 @@ Metadados e capa são embutidos quando o formato de destino suporta.
 | `pen_drive_maker/organizer.py` | Metadados → pastas, saneamento de nomes |
 | `pen_drive_maker/genre.py` | Consulta de gênero e cache |
 | `pen_drive_maker/library.py` | Biblioteca: reconhecer, conferir, mover, exportar, copiar |
+| `pen_drive_maker/identify.py` | Reconhecer arquivos soltos por nome/tags e vincular a uma URL |
 | `pen_drive_maker/biblioteca_ui.py` | Página da biblioteca e tarefas em segundo plano |
 | `pen_drive_maker/assinatura/` | Assinatura visual (tema, janela, ações) |
 | `pen_drive_maker/tools.py` | Localização do ffmpeg e do runtime JavaScript |
@@ -416,6 +438,7 @@ Metadados e capa são embutidos quando o formato de destino suporta.
 | `tests/test_tools.py` | Testes da detecção de ferramentas externas |
 | `tests/test_genre.py` | Testes da consulta de gênero (sem rede) |
 | `tests/test_library.py` | Cenários de biblioteca, incluindo tags reais com ffmpeg |
+| `tests/test_identify.py` | Reconhecimento de arquivos soltos (busca simulada) |
 | `tests/test_sync.py` | Conferência entre o catálogo e o disco |
 | `tests/test_gui.py` | Testes da interface (Qt offscreen) |
 | `pyproject.toml` | Metadados do pacote e entry point `pen-drive-maker` |

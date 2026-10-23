@@ -239,7 +239,9 @@ def reconcile(
                 track_number=tags.get("track"),  # type: ignore[arg-type]
             )
             relatorio.adopted.append(video_id)
-        relatorio.unknown = indice.unknown
+        # Arquivos já vinculados a uma URL à mão (sem tag) não são "desconhecidos".
+        conhecidos = {i.relpath for i in store.list_items() if i.relpath}
+        relatorio.unknown = [u for u in indice.unknown if u not in conhecidos]
     return relatorio
 
 
