@@ -397,12 +397,17 @@ class QueueStore:
                 stats.pending += row["n"]
         return stats
 
-    def next_pending(self) -> Optional[QueueItem]:
+    def next_pending(self, exclude: Iterable[str] = ()) -> Optional[QueueItem]:
+        """Próxima faixa da fila, pulando as que já estão em andamento."""
         # rowid = ordem de chegada: a primeira playlist vem antes da segunda.
+        excluidas = list(exclude)
+        filtro = ""
+        if excluidas:
+            filtro = " AND video_id NOT IN (%s)" % ",".join("?" * len(excluidas))
         with self._lock:
             row = self._conn.execute(
-                "SELECT * FROM items WHERE status = ? ORDER BY rowid LIMIT 1",
-                (STATUS_PENDING,),
+                "SELECT * FROM items WHERE status = ?" + filtro + " ORDER BY rowid LIMIT 1",
+                (STATUS_PENDING, *excluidas),
             ).fetchone()
         return self._row_to_item(row) if row else None
 

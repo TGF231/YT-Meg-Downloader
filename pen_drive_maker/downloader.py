@@ -15,8 +15,10 @@ Estratégia contra bloqueio do servidor:
 from __future__ import annotations
 
 import os
+import queue
 import random
 import re
+import shutil
 import threading
 import time
 import traceback
@@ -27,7 +29,6 @@ from typing import Any, Callable, Dict, List, Optional
 from yt_dlp import YoutubeDL
 from yt_dlp.postprocessor.common import PostProcessor
 from yt_dlp.cookies import CookieLoadError, load_cookies
-from yt_dlp.utils import DownloadError, ExtractorError
 
 from .config import AppConfig
 from .genre import GenreLookup
@@ -41,7 +42,7 @@ from .tools import (  # reexportados: a interface e os testes importam daqui
     find_ffmpeg,
     find_js_runtime,
 )
-from .store import QueueItem, QueueStats, QueueStore
+from .store import STATE_DIRNAME, QueueItem, QueueStats, QueueStore
 
 # --------------------------------------------------------------------------- #
 # Classificação de erros
@@ -328,6 +329,79 @@ class _YdlLogger:
 # --------------------------------------------------------------------------- #
 
 
+@dataclass
+class _Job:
+    """Faixa já baixada, esperando conversão, tags e mudança de pasta."""
+
+    item: QueueItem
+    info: Dict[str, Any]       # metadados do probe
+    result: Dict[str, Any]     # o que o yt-dlp devolveu do download cru
+    raw_path: str
+    staging: Path
+    position: int
+    total: int
+    started: float
+
+
+class _PostWorker:
+    """Converte e organiza as faixas enquanto a thread principal já baixa a próxima.
+
+    A fila é curta de propósito: se a conversão não acompanha o download, quem
+    baixa espera, em vez de encher o disco de áudio cru.
+    """
+
+    def __init__(self, engine: "DownloadEngine", capacity: int = 3):
+        self._engine = engine
+        self._queue: "queue.Queue[Optional[_Job]]" = queue.Queue(maxsize=capacity)
+        self._cond = threading.Condition()
+        self._ids: set = set()
+        self._thread = threading.Thread(target=self._run, name="conversao", daemon=True)
+        self._thread.start()
+
+    @property
+    def pending(self) -> int:
+        with self._cond:
+            return len(self._ids)
+
+    def in_flight(self) -> List[str]:
+        with self._cond:
+            return list(self._ids)
+
+    def submit(self, job: _Job) -> None:
+        with self._cond:
+            self._ids.add(job.item.video_id)
+        self._queue.put(job)  # bloqueia se a conversão está atrasada
+
+    def wait_idle(self) -> None:
+        with self._cond:
+            while self._ids:
+                self._cond.wait(timeout=0.25)
+
+    def close(self) -> None:
+        """Termina o que já foi baixado e encerra a thread."""
+        pendentes = self.pending
+        if pendentes:
+            self._engine._log("info", f"Terminando {pendentes} faixa(s) já baixada(s)...")
+            self._engine._status(f"Finalizando {pendentes} conversão(ões)...")
+        self._queue.put(None)
+        self._thread.join()
+
+    def _run(self) -> None:
+        while True:
+            job = self._queue.get()
+            if job is None:
+                return
+            try:
+                self._engine._complete(job)
+            except Exception as exc:  # uma faixa ruim não derruba a conversão das outras
+                self._engine._on_post_error(job.item, exc)
+            finally:
+                with self._cond:
+                    self._ids.discard(job.item.video_id)
+                    self._cond.notify_all()
+                self._engine._emit_stats()
+
+
 class DownloadEngine:
     def __init__(
         self,
@@ -474,17 +548,27 @@ class DownloadEngine:
         return opts
 
     def _download_opts(self, outtmpl: str) -> Dict[str, Any]:
+        """Só baixa o áudio cru: converter e gravar tags é a etapa seguinte."""
         opts = self._base_opts()
         opts.update(
             {
                 "format": "bestaudio/best",
                 "outtmpl": {"default": outtmpl},
-                "postprocessors": self._postprocessors(),
                 "writethumbnail": self.cfg.embed_thumbnail,
-                "prefer_ffmpeg": True,
                 "overwrites": False,
                 "continuedl": True,
                 "progress_hooks": [self._progress_hook],
+            }
+        )
+        return opts
+
+    def _post_opts(self) -> Dict[str, Any]:
+        """Conversão, tags e capa: roda na thread de conversão, sem rede."""
+        opts = self._base_opts()
+        opts.update(
+            {
+                "postprocessors": self._postprocessors(),
+                "prefer_ffmpeg": True,
                 "postprocessor_hooks": [self._postprocessor_hook],
             }
         )
@@ -509,7 +593,7 @@ class DownloadEngine:
 
     def _postprocessor_hook(self, event: Dict[str, Any]) -> None:
         if event.get("status") == "started":
-            self.cb.file_progress(100.0, f"processando ({event.get('postprocessor')})")
+            self._log("debug", f"Processando ({event.get('postprocessor')})")
 
     # ------------------------------------------------------------- extração
 
@@ -665,7 +749,8 @@ class DownloadEngine:
 
     # ------------------------------------------------------------- download
 
-    def _outtmpl_for(self, tags: TrackTags, video_id: str = "") -> str:
+    def _base_for(self, tags: TrackTags, video_id: str = "") -> Path:
+        """Destino da faixa na estrutura configurada, sem extensão."""
         relative = build_relative_path(
             tags,
             self.cfg.ascii_only,
@@ -679,16 +764,51 @@ class DownloadEngine:
             # ou esta seria pulada como "já baixada".
             base = base.with_name(f"{base.name} [{video_id}]")
             self._log("warn", f"Nome repetido; esta faixa vira {base.name}.")
-        # O outtmpl é uma string de formatação: '%' literal precisa ser escapado.
-        return str(base).replace("%", "%%") + ".%(ext)s"
+        return base
 
-    def _download_one(self, item: QueueItem) -> tuple[str, TrackTags]:
-        """Resolve metadados e baixa uma faixa. Uma extração de rede por faixa."""
+    def _outtmpl_for(self, tags: TrackTags, video_id: str = "") -> str:
+        # O outtmpl é uma string de formatação: '%' literal precisa ser escapado.
+        return str(self._base_for(tags, video_id)).replace("%", "%%") + ".%(ext)s"
+
+    def _staging_dir(self, video_id: str) -> Path:
+        """Onde o áudio cru espera pela conversão (fora da biblioteca, oculto)."""
+        raiz = Path(self.cfg.output_dir).expanduser().resolve()
+        return raiz / STATE_DIRNAME / "staging" / video_id
+
+    def _fetch(self, item: QueueItem, position: int, total: int) -> "_Job":
+        """Etapa de rede: metadados e áudio cru. A conversão fica para outra thread."""
+        started = time.monotonic()
         with YoutubeDL(self._probe_opts()) as probe:
             info = probe.extract_info(item.url, download=False)
         if not info:
             raise RuntimeError("Metadados vazios.")
 
+        staging = self._staging_dir(item.video_id)
+        staging.mkdir(parents=True, exist_ok=True)
+        outtmpl = str(staging / "audio").replace("%", "%%") + ".%(ext)s"
+        # Reaproveita o dicionário já extraído (mesmo caminho do --load-info-json
+        # do yt-dlp), então o download não faz uma segunda extração de página.
+        payload = YoutubeDL.sanitize_info(info, remove_private_keys=True)
+        with YoutubeDL(self._download_opts(outtmpl)) as ydl:
+            try:
+                result = ydl.process_ie_result(payload, download=True)
+            except (Stopped, CookieLoadError):
+                raise
+            except Exception as exc:
+                if classify_error(str(exc)) != ERROR_TRANSIENT:
+                    raise
+                # Informações defasadas (URLs de mídia expiram): refaz pela URL.
+                self._log("warn", f"Reaproveitamento falhou ({exc}); baixando pela URL.")
+                result = ydl.extract_info(item.url, download=True)
+
+        raw = self._final_path(result)
+        if not raw or not Path(raw).is_file():
+            raise RuntimeError("O download não gerou arquivo.")
+        return _Job(item, info, result, raw, staging, position, total, started)
+
+    def _finish(self, job: "_Job") -> tuple[str, TrackTags]:
+        """Etapa local: tags, conversão, capa e mover para a pasta certa."""
+        item, info = job.item, job.info
         # A consulta online precisa de artista e título já limpos, então roda
         # depois da primeira resolução e só substitui o gênero.
         tags = resolve_tags(
@@ -710,34 +830,29 @@ class DownloadEngine:
             # Local escolhido à mão (ou vindo de outra biblioteca): vale mais
             # do que a estrutura de pastas configurada.
             base = (raiz / item.relpath).with_suffix("")
-            outtmpl = str(base).replace("%", "%%") + ".%(ext)s"
             self._log("info", f"Destino fixado: {item.relpath}")
         else:
-            outtmpl = self._outtmpl_for(tags, item.video_id)
-            relativo = os.path.relpath(outtmpl.replace("%%", "%").replace(".%(ext)s", ""), raiz)
-            self._log("info", f"Destino: {Path(relativo).as_posix()}")
+            base = self._base_for(tags, item.video_id)
+            self._log("info", f"Destino: {Path(os.path.relpath(base, raiz)).as_posix()}")
 
-        # Reaproveita o dicionário já extraído (mesmo caminho do --load-info-json
-        # do yt-dlp), então o download não faz uma segunda extração de página.
-        payload = YoutubeDL.sanitize_info(info, remove_private_keys=True)
-        with YoutubeDL(self._download_opts(outtmpl)) as ydl:
-            if self.cfg.embed_metadata:
-                ydl.add_post_processor(
-                    _TagInjector(self._campos_de_tag(tags, item)), when="pre_process"
-                )
-            try:
-                result = ydl.process_ie_result(payload, download=True)
-            except (Stopped, CookieLoadError):
-                raise
-            except Exception as exc:
-                if classify_error(str(exc)) != ERROR_TRANSIENT:
-                    raise
-                # Informações defasadas (URLs de mídia expiram): refaz pela URL.
-                self._log("warn", f"Reaproveitamento falhou ({exc}); baixando pela URL.")
-                result = ydl.extract_info(item.url, download=True)
+        entrada = dict(job.result)
+        if self.cfg.embed_metadata:
+            _TagInjector(self._campos_de_tag(tags, item)).run(entrada)
+        with YoutubeDL(self._post_opts()) as ydl:
+            saida = ydl.post_process(job.raw_path, entrada)
+        produzido = Path(saida["filepath"])
+        if not produzido.is_file():
+            raise RuntimeError("A conversão não gerou arquivo.")
 
-        path = self._final_path(result)
-        return path, tags
+        destino = base.with_name(base.name + produzido.suffix)
+        if destino.exists() and self.store.filepath_owner(str(base)) != item.video_id:
+            # Um arquivo que não é desta faixa (posto à mão, por exemplo) nunca é
+            # sobrescrito; o da própria faixa, ao baixar de novo, é substituído.
+            destino = destino.with_name(f"{destino.stem} [{item.video_id}]{destino.suffix}")
+        destino.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(produzido), str(destino))
+        shutil.rmtree(job.staging, ignore_errors=True)
+        return str(destino), tags
 
     @staticmethod
     def _campos_de_tag(tags: TrackTags, item: QueueItem) -> Dict[str, str]:
@@ -882,52 +997,74 @@ class DownloadEngine:
             self._log("warn", f"Playlist sem nome; gênero cai em {self.cfg.default_genre}.")
 
     def _process_queue(self) -> None:
-        while True:
-            self._check_control()
-            item = self.store.next_pending()
-            if item is None:
-                return
+        """Baixa em série (para não estressar o servidor) e converte em paralelo."""
+        worker = _PostWorker(self)
+        try:
+            while True:
+                self._check_control()
+                item = self.store.next_pending(exclude=worker.in_flight())
+                if item is None:
+                    if worker.pending:
+                        # Uma conversão que falhe devolve a faixa à fila.
+                        self._status("Aguardando as conversões terminarem...")
+                        worker.wait_idle()
+                        continue
+                    return
 
-            stats = self.store.stats()
-            position = stats.done + stats.failed + 1
-            label = item.title or item.video_id
-            self._status(f"[{position}/{stats.total}] {label}")
+                stats = self.store.stats()
+                position = stats.done + stats.failed + worker.pending + 1
+                label = item.title or item.video_id
+                self._status(f"[{position}/{stats.total}] {label}")
 
-            self._wait_rate_limit()
-            self._check_control()
+                self._wait_rate_limit()
+                self._check_control()
 
-            self._log("info", f"[{position}/{stats.total}] Baixando: {label}")
-            started = time.monotonic()
-            try:
-                path, tags = self._download_one(item)
-            except (Stopped, CookieError, CookieLoadError, EnvironmentProblem):
-                raise
-            except (DownloadError, ExtractorError, OSError, RuntimeError) as exc:
-                self._last_download_ts = time.monotonic()
-                self._on_item_error(item, exc)
-            except Exception as exc:  # erro fora do previsto no yt-dlp
-                self._last_download_ts = time.monotonic()
-                self._on_item_error(item, exc)
-            else:
-                self._last_download_ts = time.monotonic()
-                self._consecutive_failures = 0
-                self._block_events = 0  # sucesso limpa o histórico de bloqueios
-                # Guarda os nomes já saneados: é o que existe de fato no disco.
-                # Guarda os níveis que existem de fato: sem a pasta de álbum,
-                # o banco e a árvore da interface não devem inventá-la.
-                # Grava as tags reais: a árvore lê os caminhos, e reorganizar
-                # para outra estrutura precisa saber artista e álbum de verdade.
-                self.store.mark_done(
-                    item.video_id, path, tags.genre, tags.artist, tags.album,
-                    tags.title, tags.track_number,
-                )
-                self._log(
-                    "ok",
-                    f"OK em {time.monotonic() - started:.0f}s: {path or '(caminho não informado)'}",
-                )
-                self.cb.item_done(path, tags)
-            finally:
-                self._emit_stats()
+                self._log("info", f"[{position}/{stats.total}] Baixando: {label}")
+                try:
+                    job = self._fetch(item, position, stats.total)
+                except (Stopped, CookieError, CookieLoadError, EnvironmentProblem):
+                    raise
+                except Exception as exc:  # erro de rede, yt-dlp ou disco
+                    self._last_download_ts = time.monotonic()
+                    self._on_item_error(item, exc)
+                else:
+                    self._last_download_ts = time.monotonic()
+                    self._consecutive_failures = 0
+                    self._block_events = 0  # sucesso limpa o histórico de bloqueios
+                    self._log("info", f"Baixado: {label} (convertendo em segundo plano)")
+                    worker.submit(job)
+                finally:
+                    self._emit_stats()
+        finally:
+            # Mesmo parando ou sendo bloqueado: o que já foi baixado é convertido.
+            worker.close()
+
+    def _complete(self, job: _Job) -> None:
+        """Roda na thread de conversão: termina a faixa e a marca como baixada."""
+        item = job.item
+        path, tags = self._finish(job)
+        # Guarda os níveis que existem de fato: sem a pasta de álbum, o banco e
+        # a árvore da interface não devem inventá-la. As tags reais também ficam:
+        # reorganizar para outra estrutura precisa saber artista e álbum.
+        self.store.mark_done(
+            item.video_id, path, tags.genre, tags.artist, tags.album,
+            tags.title, tags.track_number,
+        )
+        self._log("ok", f"OK em {time.monotonic() - job.started:.0f}s: {path}")
+        try:
+            self.cb.item_done(path, tags)
+        except Exception as exc:  # a faixa já está salva: erro de interface não a desfaz
+            self._log("debug", f"Callback item_done falhou: {exc}")
+
+    def _on_post_error(self, item: QueueItem, exc: Exception) -> None:
+        """Falha na conversão: não é bloqueio, só conta como tentativa da faixa."""
+        message = str(exc).strip() or exc.__class__.__name__
+        attempts = self.store.register_failure(
+            item.video_id, message, self.cfg.max_retries, final=False
+        )
+        nivel = "error" if attempts >= self.cfg.max_retries else "warn"
+        self._log(nivel, f"Falha ao converter '{item.title or item.video_id}' "
+                         f"({attempts}/{self.cfg.max_retries}): {message}")
 
     def _on_item_error(self, item: QueueItem, exc: Exception) -> None:
         if self._stop.is_set():

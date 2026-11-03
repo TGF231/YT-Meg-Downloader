@@ -35,6 +35,25 @@ Cada faixa gasta **uma** extração de rede: o dicionário de informações obti
 reaproveitado no download (mesmo caminho do `--load-info-json` do `yt-dlp`), em
 vez de extrair a página duas vezes.
 
+### Download e conversão em paralelo
+
+São duas filas. Os **downloads** continuam em série e com intervalo (é o que
+poupa o servidor), mas a **conversão** — extrair o áudio, gravar as tags, embutir
+a capa, renomear e mover para a pasta certa — roda numa thread própria. Enquanto
+uma faixa converte, a próxima já está baixando; o intervalo entre downloads
+passa a ser o único tempo de espera.
+
+- O áudio cru espera em `.pen-drive-maker/staging/` (pasta oculta, fora da
+  biblioteca) e só aparece na estrutura de pastas quando está pronto. Uma queda
+  no meio nunca deixa um arquivo pela metade entre as suas músicas.
+- A fila entre as duas etapas é curta (3 faixas): se a conversão atrasar, o
+  download espera, em vez de encher o disco de áudio cru.
+- **Parar** (ou um bloqueio) não perde trabalho: o que já foi baixado termina de
+  converter antes de o programa encerrar.
+- Se uma conversão falhar, só aquela faixa conta uma tentativa; as outras seguem.
+  Um arquivo que não é da faixa e já ocupa o destino nunca é sobrescrito: a
+  faixa nova ganha o id do vídeo no nome.
+
 ## Instalação
 
 Três caminhos, do mais simples ao mais flexível.
@@ -447,6 +466,7 @@ Metadados e capa são embutidos quando o formato de destino suporta.
 | `tests/test_genre.py` | Testes da consulta de gênero (sem rede) |
 | `tests/test_library.py` | Cenários de biblioteca, incluindo tags reais com ffmpeg |
 | `tests/test_identify.py` | Reconhecimento de arquivos soltos (busca simulada) |
+| `tests/test_pipeline.py` | Download e conversão em paralelo (incluindo ffmpeg real) |
 | `tests/test_sync.py` | Conferência entre o catálogo e o disco |
 | `tests/test_gui.py` | Testes da interface (Qt offscreen) |
 | `pyproject.toml` | Metadados do pacote e entry point `pen-drive-maker` |

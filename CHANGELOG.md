@@ -3,6 +3,20 @@
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o
 versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
+## [2.2.0] - 2026-11-03
+
+### Alterado
+
+- **Download e conversão em filas separadas.** A conversão (extrair o áudio,
+  gravar tags, embutir capa, renomear e mover) roda numa thread própria: a
+  próxima faixa começa a baixar sem esperar a anterior terminar de converter.
+  Os downloads seguem em série e com intervalo, então a proteção contra
+  bloqueio não muda.
+- O áudio cru espera em `.pen-drive-maker/staging/` e só entra na biblioteca
+  pronto. Parar ou ser bloqueado termina de converter o que já foi baixado.
+- Falha de conversão conta uma tentativa só daquela faixa e não é tratada como
+  bloqueio. Um arquivo alheio no destino nunca é sobrescrito.
+
 ## [2.1.0] - 2026-10-23
 
 ### Adicionado
@@ -355,6 +369,7 @@ Primeira versão.
 - Interface PySide6 com contadores, barras de progresso, log colorido, árvore
   da estrutura de pastas criada e controles de pausar, retomar e parar.
 
+[2.2.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v2.2.0
 [2.1.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v2.1.0
 [2.0.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v2.0.0
 [1.6.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v1.6.0

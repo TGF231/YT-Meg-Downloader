@@ -1,5 +1,6 @@
 """Testes offline do motor: o yt-dlp é substituído por um duplo, sem rede."""
 
+import os
 import pathlib
 import sys
 import tempfile
@@ -79,22 +80,44 @@ class FakeYDL:
             raise planned.pop(0)
         return dict(FakeYDL.tracks[video_id])
 
+    # Eventos na ordem em que aconteceram: ("download", id) e ("pos", id).
+    eventos: list = []
+    # Se definido, a conversão espera por este Event (para provar o paralelismo).
+    porta_pos = None
+    falhas_pos: dict = {}
+
     def process_ie_result(self, info, download=True):
+        """Download cru: sem postprocessors, o arquivo fica como veio (webm)."""
         FakeYDL.calls["download"] += 1
-        info = dict(info)
-        for pp in self._pre:  # como o yt-dlp: pre_process roda antes do download
-            _, info = pp.run(info)
-        meta = {k: v for k, v in info.items() if k.startswith("meta_")}
-        FakeYDL.tags_gravadas[info.get("id")] = meta
+        FakeYDL.eventos.append(("download", info.get("id")))
+        assert not self.params.get("postprocessors"), "o download não converte mais"
         template = self.params["outtmpl"]["default"]
-        path = pathlib.Path((template % {"ext": "m4a"}).replace("%%", "%"))
+        path = pathlib.Path((template % {"ext": "webm"}).replace("%%", "%"))
         path.parent.mkdir(parents=True, exist_ok=True)
-        # O "arquivo" carrega o id de origem só se a tag foi pedida, como o real.
-        conteudo = f"PDMID:{info.get('id')}" if meta.get("meta_comment") else "audio"
-        path.write_bytes(conteudo.encode())
+        path.write_bytes(b"cru")
         result = dict(info)
         result["requested_downloads"] = [{"filepath": str(path)}]
         return result
+
+    def post_process(self, filename, info, files_to_move=None):
+        """Conversão: troca a extensão e grava as tags, como o FFmpegExtractAudio."""
+        video_id = info.get("id")
+        if FakeYDL.porta_pos is not None:
+            FakeYDL.porta_pos.wait(10)
+        planned = FakeYDL.falhas_pos.get(video_id)
+        if planned:
+            raise planned.pop(0)
+        FakeYDL.eventos.append(("pos", video_id))
+        meta = {k: v for k, v in info.items() if k.startswith("meta_")}
+        FakeYDL.tags_gravadas[video_id] = meta
+        novo = pathlib.Path(filename).with_suffix(".m4a")
+        # O "arquivo" carrega o id de origem só se a tag foi pedida, como o real.
+        conteudo = f"PDMID:{video_id}" if meta.get("meta_comment") else "audio"
+        novo.write_bytes(conteudo.encode())
+        os.remove(filename)
+        info = dict(info)
+        info["filepath"] = str(novo)
+        return info
 
 
 def ler_id_do_dublê(caminho):
