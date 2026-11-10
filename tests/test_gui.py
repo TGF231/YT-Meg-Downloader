@@ -558,6 +558,27 @@ class JanelaTest(unittest.TestCase):
         self.assertTrue(aplicado.genre_keep_unmapped)
         self.assertEqual(aplicado.genre_group_map(), {"Balada": ("pop", "rock")})
 
+    def test_options_carry_the_concurrency_settings(self):
+        from pen_drive_maker.gui import OpcoesAvancadas
+
+        cfg = self.w.config_atual()
+        dialogo = OpcoesAvancadas(cfg, self.w)
+        self.assertEqual((dialogo.max_downloads.value(), dialogo.max_conversions.value()), (2, 2))
+        dialogo.max_downloads.setValue(4)
+        dialogo.max_conversions.setValue(3)
+        aplicado = dialogo.aplicar(cfg)
+        self.assertEqual((aplicado.max_downloads, aplicado.max_conversions), (4, 3))
+
+    def test_the_bars_show_counts_and_what_is_happening_now(self):
+        from pen_drive_maker.store import QueueStats
+
+        self.w._ao_stats(QueueStats(total=10, done=3, failed=1, pending=6))
+        self.assertIn("4/10", self.w.barra_playlist.text())
+        self.w._ao_progresso(62.0, "2 baixando (62%) · 1 convertendo")
+        self.assertEqual(self.w.barra_faixa.value(), 62)
+        self.assertIn("2 baixando", self.w.barra_faixa.text())
+        self.assertIn("1 convertendo", self.w.barra_faixa.text())
+
     def test_options_open_when_preferences_come_back_as_text(self):
         """O QSettings do Windows devolve "true"/"false" como texto."""
         from pen_drive_maker.config import AppConfig

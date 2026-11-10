@@ -4,6 +4,7 @@ import os
 import pathlib
 import sys
 import tempfile
+import threading
 import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
@@ -82,15 +83,38 @@ class FakeYDL:
 
     # Eventos na ordem em que aconteceram: ("download", id) e ("pos", id).
     eventos: list = []
-    # Se definido, a conversão espera por este Event (para provar o paralelismo).
+    # Se definidos, o download / a conversão esperam por estes Events (para provar
+    # o paralelismo). `pico_*` guarda quantos estiveram em andamento ao mesmo tempo.
     porta_pos = None
+    porta_download = None
     falhas_pos: dict = {}
+    _trava = threading.Lock()
+    em_andamento = {"download": 0, "pos": 0}
+    pico = {"download": 0, "pos": 0}
+
+    @classmethod
+    def _entrar(cls, fase):
+        with cls._trava:
+            cls.em_andamento[fase] += 1
+            cls.pico[fase] = max(cls.pico[fase], cls.em_andamento[fase])
+
+    @classmethod
+    def _sair(cls, fase):
+        with cls._trava:
+            cls.em_andamento[fase] -= 1
 
     def process_ie_result(self, info, download=True):
         """Download cru: sem postprocessors, o arquivo fica como veio (webm)."""
-        FakeYDL.calls["download"] += 1
+        with FakeYDL._trava:
+            FakeYDL.calls["download"] += 1
         FakeYDL.eventos.append(("download", info.get("id")))
         assert not self.params.get("postprocessors"), "o download não converte mais"
+        FakeYDL._entrar("download")
+        try:
+            if FakeYDL.porta_download is not None:
+                FakeYDL.porta_download.wait(10)
+        finally:
+            FakeYDL._sair("download")
         template = self.params["outtmpl"]["default"]
         path = pathlib.Path((template % {"ext": "webm"}).replace("%%", "%"))
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -102,8 +126,12 @@ class FakeYDL:
     def post_process(self, filename, info, files_to_move=None):
         """Conversão: troca a extensão e grava as tags, como o FFmpegExtractAudio."""
         video_id = info.get("id")
-        if FakeYDL.porta_pos is not None:
-            FakeYDL.porta_pos.wait(10)
+        FakeYDL._entrar("pos")
+        try:
+            if FakeYDL.porta_pos is not None:
+                FakeYDL.porta_pos.wait(10)
+        finally:
+            FakeYDL._sair("pos")
         planned = FakeYDL.falhas_pos.get(video_id)
         if planned:
             raise planned.pop(0)
@@ -137,6 +165,13 @@ class ConfigTest(unittest.TestCase):
         self.assertIs(cfg.ascii_only, True)
         self.assertIs(cfg.genre_per_artist, False)
         self.assertIs(cfg.group_subgenres, False)
+
+    def test_concurrency_limits_are_clamped(self):
+        cfg = AppConfig.from_dict({"max_downloads": 0, "max_conversions": 99})
+        self.assertEqual((cfg.max_downloads, cfg.max_conversions), (1, 8))
+        cfg = AppConfig.from_dict({"max_downloads": 50})
+        self.assertEqual(cfg.max_downloads, 6)
+        self.assertEqual(AppConfig().max_downloads, 2)
 
     def test_unusable_genre_rules_fall_back_to_the_default(self):
         cfg = AppConfig.from_dict({"genre_groups": "isto não é uma regra"})

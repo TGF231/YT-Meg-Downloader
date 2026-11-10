@@ -344,6 +344,8 @@ def reorganize(
     stop: Optional[threading.Event] = None,
     regrupar: Optional[Callable[[str, str], Optional[str]]] = None,
     por_artista: bool = False,
+    artistas: Optional[set] = None,
+    so_genero: bool = False,
 ) -> ReorgReport:
     """Move os arquivos já baixados para a estrutura de pastas atual.
 
@@ -358,7 +360,13 @@ def reorganize(
 
     Com `por_artista`, as faixas de cada artista passam todas para o gênero que
     predomina entre elas. Sempre que o gênero muda, a tag dentro do arquivo é
-    regravada, para a pasta e o que o rádio mostra não divergirem.
+    regravada, para a pasta e o que o rádio mostra não divergirem. O gênero de
+    reserva (nome da playlist, gênero padrão) não conta nessa votação: ele só
+    diz que ninguém soube o gênero da faixa.
+
+    `artistas` limita a ação às faixas desses artistas, e `so_genero` mexe
+    apenas nas faixas cujo gênero muda — assim uma unificação não reorganiza o
+    resto da biblioteca.
     """
     root = Path(root)
     relatorio = ReorgReport()
@@ -394,18 +402,23 @@ def reorganize(
                 tags = replace(tags, genre=novo_genero or reserva)
         plano.append((item, origem, tags))
 
+    if artistas is not None:
+        pedidos = {a.strip().lower() for a in artistas}
+        plano = [(i, o, t) for i, o, t in plano if t.artist.strip().lower() in pedidos]
+
     if por_artista:
+        fracos = store.playlist_titles() | {default_genre.strip().lower()}
         contagem: Dict[str, Dict[str, int]] = {}
         for _item, _origem, tags in plano:
             artista = tags.artist.strip().lower()
-            if artista != "artista desconhecido":
-                contagem.setdefault(artista, {}).setdefault(tags.genre, 0)
-                contagem[artista][tags.genre] += 1
-        predominante = {
+            if artista == "artista desconhecido" or tags.genre.strip().lower() in fracos:
+                continue
+            contagem.setdefault(artista, {}).setdefault(tags.genre, 0)
+            contagem[artista][tags.genre] += 1
+        predominante = {}
+        for artista, generos in contagem.items():
             # max() fica com o primeiro em caso de empate (a ordem é a de chegada)
-            artista: max(generos, key=generos.get)  # type: ignore[arg-type]
-            for artista, generos in contagem.items()
-        }
+            predominante[artista] = max(generos, key=generos.get)  # type: ignore[arg-type]
         plano = [
             (item, origem, replace(tags, genre=predominante.get(tags.artist.strip().lower(),
                                                                 tags.genre)))
@@ -417,6 +430,8 @@ def reorganize(
     for item, origem, tags in plano:
         if _parar(stop):
             break
+        if so_genero and tags.genre == item.genre:
+            continue
         if tags.genre != item.genre:
             store.set_tags(item.video_id, tags.artist, tags.album, tags.genre,
                            tags.track_number)

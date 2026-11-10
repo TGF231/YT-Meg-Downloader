@@ -32,8 +32,8 @@ from yt_dlp.cookies import CookieLoadError, load_cookies
 
 from .config import AppConfig
 from .genre import GenreLookup
-from .library import reconcile
-from .organizer import TrackTags, build_relative_path, resolve_tags
+from .library import reconcile, reorganize
+from .organizer import TrackTags, build_relative_path, metadata_genre, resolve_tags
 from .tools import (  # reexportados: a interface e os testes importam daqui
     describe_missing_ejs,
     describe_missing_ffmpeg,
@@ -344,62 +344,52 @@ class _Job:
 
 
 class _PostWorker:
-    """Converte e organiza as faixas enquanto a thread principal já baixa a próxima.
+    """Converte e organiza as faixas enquanto os downloads seguem.
 
-    A fila é curta de propósito: se a conversão não acompanha o download, quem
-    baixa espera, em vez de encher o disco de áudio cru.
+    Vários threads consomem a mesma fila. Ela é curta de propósito: se a
+    conversão não acompanha o download, quem baixa espera, em vez de encher o
+    disco de áudio cru.
     """
 
-    def __init__(self, engine: "DownloadEngine", capacity: int = 3):
+    def __init__(self, engine: "DownloadEngine", threads: int = 1, capacity: int = 3):
         self._engine = engine
-        self._queue: "queue.Queue[Optional[_Job]]" = queue.Queue(maxsize=capacity)
-        self._cond = threading.Condition()
-        self._ids: set = set()
-        self._thread = threading.Thread(target=self._run, name="conversao", daemon=True)
-        self._thread.start()
-
-    @property
-    def pending(self) -> int:
-        with self._cond:
-            return len(self._ids)
-
-    def in_flight(self) -> List[str]:
-        with self._cond:
-            return list(self._ids)
+        self._queue: "queue.Queue[Optional[_Job]]" = queue.Queue(maxsize=max(capacity, threads * 2))
+        self._threads = [
+            threading.Thread(target=self._run, name=f"conversao-{i + 1}", daemon=True)
+            for i in range(threads)
+        ]
+        for thread in self._threads:
+            thread.start()
 
     def submit(self, job: _Job) -> None:
-        with self._cond:
-            self._ids.add(job.item.video_id)
         self._queue.put(job)  # bloqueia se a conversão está atrasada
 
-    def wait_idle(self) -> None:
-        with self._cond:
-            while self._ids:
-                self._cond.wait(timeout=0.25)
-
     def close(self) -> None:
-        """Termina o que já foi baixado e encerra a thread."""
-        pendentes = self.pending
+        """Termina o que já foi baixado e encerra as threads."""
+        pendentes = self._queue.qsize()
         if pendentes:
             self._engine._log("info", f"Terminando {pendentes} faixa(s) já baixada(s)...")
             self._engine._status(f"Finalizando {pendentes} conversão(ões)...")
-        self._queue.put(None)
-        self._thread.join()
+        for _ in self._threads:
+            self._queue.put(None)
+        for thread in self._threads:
+            thread.join()
 
     def _run(self) -> None:
+        engine = self._engine
         while True:
             job = self._queue.get()
             if job is None:
                 return
+            engine._converting_delta(+1)
             try:
-                self._engine._complete(job)
+                engine._complete(job)
             except Exception as exc:  # uma faixa ruim não derruba a conversão das outras
-                self._engine._on_post_error(job.item, exc)
+                engine._on_post_error(job.item, exc)
             finally:
-                with self._cond:
-                    self._ids.discard(job.item.video_id)
-                    self._cond.notify_all()
-                self._engine._emit_stats()
+                engine._converting_delta(-1)
+                engine._release(job.item.video_id)
+                engine._emit_stats()
 
 
 class DownloadEngine:
@@ -426,8 +416,24 @@ class DownloadEngine:
 
         self._block_events = 0
         self._consecutive_failures = 0
-        self._last_download_ts: Optional[float] = None
         self._last_progress_ts = 0.0
+
+        # Vários downloads e conversões ao mesmo tempo: tudo que as threads
+        # dividem passa por um destes travas.
+        self._lock = threading.RLock()          # contadores, faixas em andamento
+        self._mudou = threading.Condition(self._lock)  # uma faixa saiu de andamento
+        self._active: set = set()               # ids baixando ou convertendo
+        self._halt = threading.Event()          # um erro fatal: ninguém pega faixa nova
+        self._fatal: Optional[BaseException] = None
+        self._block_until = 0.0                 # bloqueio detectado: todos esperam
+        self._start_lock = threading.Lock()     # escalona o início dos downloads
+        self._last_start = 0.0
+        self._artist_lock = threading.Lock()
+        self._artist_genres: Dict[str, str] = {}
+        self._artistas: set = set()             # artistas vistos nesta execução
+        self._move_lock = threading.Lock()      # só uma faixa por vez escolhe o destino
+        self._percent: Dict[int, float] = {}    # progresso de cada download em curso
+        self._converting = 0
         self._logger = _YdlLogger(self._log)
 
     # ------------------------------------------------------------- controles
@@ -580,16 +586,38 @@ class DownloadEngine:
             raise Stopped()
         if event.get("status") != "downloading":
             return
-        now = time.monotonic()
-        if now - self._last_progress_ts < 0.3:
-            return
-        self._last_progress_ts = now
         total = event.get("total_bytes") or event.get("total_bytes_estimate") or 0
         done = event.get("downloaded_bytes") or 0
-        percent = (done / total * 100.0) if total else 0.0
-        speed = event.get("speed")
-        speed_txt = f"{speed / 1024:.0f} KiB/s" if speed else "--"
-        self.cb.file_progress(percent, f"{percent:5.1f}% a {speed_txt}")
+        with self._lock:
+            self._percent[threading.get_ident()] = (done / total * 100.0) if total else 0.0
+            agora = time.monotonic()
+            if agora - self._last_progress_ts < 0.3:
+                return
+            self._last_progress_ts = agora
+        self._emit_progress()
+
+    def _emit_progress(self) -> None:
+        """Uma barra para todos: média dos downloads em curso + quantos convertem."""
+        with self._lock:
+            ativos = list(self._percent.values())
+            convertendo = self._converting
+        media = sum(ativos) / len(ativos) if ativos else (100.0 if convertendo else 0.0)
+        partes = []
+        if ativos:
+            partes.append(f"{len(ativos)} baixando ({media:.0f}%)")
+        if convertendo:
+            partes.append(f"{convertendo} convertendo")
+        self.cb.file_progress(media, " · ".join(partes) or "ocioso")
+
+    def _converting_delta(self, delta: int) -> None:
+        with self._lock:
+            self._converting += delta
+        self._emit_progress()
+
+    def _release(self, video_id: str) -> None:
+        with self._lock:
+            self._active.discard(video_id)
+            self._mudou.notify_all()
 
     def _postprocessor_hook(self, event: Dict[str, Any]) -> None:
         if event.get("status") == "started":
@@ -806,7 +834,11 @@ class DownloadEngine:
             raise RuntimeError("O download não gerou arquivo.")
         return _Job(item, info, result, raw, staging, position, total, started)
 
-    def _genero_do_artista(self, tags: TrackTags) -> TrackTags:
+    def _generos_de_reserva(self) -> set:
+        """Nomes que valem como "não se sabe o gênero": playlists e o gênero de reserva."""
+        return self.store.playlist_titles() | {self.cfg.default_genre.strip().lower()}
+
+    def _genero_do_artista(self, tags: TrackTags, confiavel: bool = True) -> TrackTags:
         """Um artista, um gênero: segue o que já predomina na biblioteca.
 
         Só vale quando o gênero vem da internet ou dos metadados da faixa, que
@@ -815,11 +847,24 @@ class DownloadEngine:
         """
         if not self.cfg.genre_per_artist or self.cfg.genre_source not in ("online", "metadata"):
             return tags
-        conhecido = self.store.artist_genre(tags.artist)
-        if conhecido and conhecido != tags.genre:
-            self._log("debug", f"Gênero de {tags.artist}: {tags.genre} -> {conhecido} "
+        chave = tags.artist.strip().lower()
+        with self._artist_lock:
+            # Duas conversões do mesmo artista ao mesmo tempo: a primeira a chegar
+            # decide, e a outra a segue, em vez de cada uma olhar o banco antes
+            # de a outra gravar.
+            conhecido = self._artist_genres.get(chave) or self.store.artist_genre(
+                tags.artist, self._generos_de_reserva()
+            )
+            final = conhecido or tags.genre
+            self._artistas.add(tags.artist)
+            if confiavel or conhecido:
+                # O gênero de reserva (nome da playlist) não decide pelo artista:
+                # só uma resposta de verdade, da internet ou da faixa, vale.
+                self._artist_genres[chave] = final
+        if final != tags.genre:
+            self._log("debug", f"Gênero de {tags.artist}: {tags.genre} -> {final} "
                                "(o que já predomina na biblioteca)")
-            return replace(tags, genre=conhecido)
+            return replace(tags, genre=final)
         return tags
 
     def _finish(self, job: "_Job") -> tuple[str, TrackTags]:
@@ -835,22 +880,22 @@ class DownloadEngine:
             # cada faixa usa a playlist que a trouxe, não a da URL atual
             self.store.playlist_title_for(item.video_id) or self._playlist_genre,
         )
+        confiavel = bool(metadata_genre(info))
         if self._genre_lookup is not None and not self._genre_lookup.disabled:
             encontrado = self._genre_lookup.lookup(tags.artist, tags.title)
             if encontrado:
                 tags = replace(tags, genre=encontrado)
+                confiavel = True
             else:
                 self._log("debug", f"Gênero não encontrado para {tags.artist} - {tags.title}")
-        tags = self._genero_do_artista(tags)
+        tags = self._genero_do_artista(tags, confiavel)
         raiz = Path(self.cfg.output_dir).expanduser().resolve()
         if item.pinned and item.relpath:
             # Local escolhido à mão (ou vindo de outra biblioteca): vale mais
             # do que a estrutura de pastas configurada.
-            base = (raiz / item.relpath).with_suffix("")
             self._log("info", f"Destino fixado: {item.relpath}")
         else:
-            base = self._base_for(tags, item.video_id)
-            self._log("info", f"Destino: {Path(os.path.relpath(base, raiz)).as_posix()}")
+            self._log("info", "Convertendo: " + (item.title or item.video_id))
 
         entrada = dict(job.result)
         if self.cfg.embed_metadata:
@@ -861,13 +906,21 @@ class DownloadEngine:
         if not produzido.is_file():
             raise RuntimeError("A conversão não gerou arquivo.")
 
-        destino = base.with_name(base.name + produzido.suffix)
-        if destino.exists() and self.store.filepath_owner(str(base)) != item.video_id:
-            # Um arquivo que não é desta faixa (posto à mão, por exemplo) nunca é
-            # sobrescrito; o da própria faixa, ao baixar de novo, é substituído.
-            destino = destino.with_name(f"{destino.stem} [{item.video_id}]{destino.suffix}")
-        destino.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(produzido), str(destino))
+        # Escolher o nome e mover é rápido; o que demora (conversão) ficou de fora
+        # da trava. Sem ela, duas faixas com o mesmo nome escolheriam o mesmo destino.
+        with self._move_lock:
+            if item.pinned and item.relpath:
+                base = (raiz / item.relpath).with_suffix("")
+            else:
+                base = self._base_for(tags, item.video_id)
+                self._log("info", f"Destino: {Path(os.path.relpath(base, raiz)).as_posix()}")
+            destino = base.with_name(base.name + produzido.suffix)
+            if destino.exists() and self.store.filepath_owner(str(base)) != item.video_id:
+                # Um arquivo que não é desta faixa (posto à mão, por exemplo) nunca é
+                # sobrescrito; o da própria faixa, ao baixar de novo, é substituído.
+                destino = destino.with_name(f"{destino.stem} [{item.video_id}]{destino.suffix}")
+            destino.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(produzido), str(destino))
         shutil.rmtree(job.staging, ignore_errors=True)
         return str(destino), tags
 
@@ -906,31 +959,55 @@ class DownloadEngine:
     # ------------------------------------------------------------- bloqueios
 
     def _handle_block(self, reason: str) -> None:
-        self._block_events += 1
-        if self._block_events > self.cfg.max_block_events:
+        with self._lock:
+            self._block_events += 1
+            eventos = self._block_events
+        if eventos > self.cfg.max_block_events:
             raise BlockedTooOften(reason)
 
         backoff = min(
-            self.cfg.block_base_backoff * (2 ** (self._block_events - 1)),
+            self.cfg.block_base_backoff * (2 ** (eventos - 1)),
             self.cfg.block_max_backoff,
         )
         backoff *= 1.0 + random.uniform(0.0, 0.25)
         self._log(
             "error",
-            f"Bloqueio detectado ({self._block_events}/{self.cfg.max_block_events}): {reason}",
+            f"Bloqueio detectado ({eventos}/{self.cfg.max_block_events}): {reason}",
         )
         self._log("warn", f"Pausando {self._fmt_duration(backoff)} antes de tentar de novo.")
-        self._sleep(backoff, "Aguardando após bloqueio:")
+        with self._lock:
+            # Vale para todas as vagas de download, não só para a que foi barrada.
+            self._block_until = max(self._block_until, time.monotonic() + backoff)
+        self._wait_unblocked()
         self._log("info", "Retomando a fila após o backoff.")
 
-    def _wait_rate_limit(self) -> None:
-        if self._last_download_ts is None:
-            return  # primeira faixa da sessão: sem espera
+    def _wait_unblocked(self) -> None:
+        """Espera o fim do backoff de um bloqueio, qualquer que seja a vaga que o achou."""
+        while True:
+            resta = self._block_until - time.monotonic()
+            if resta <= 0:
+                return
+            self._sleep(resta, "Aguardando após bloqueio:")
+
+    def _wait_rate_limit(self, ultimo_fim: Optional[float]) -> None:
+        """Intervalo entre downloads, contado por vaga: cada uma espera o seu."""
+        if ultimo_fim is None:
+            return  # primeira faixa desta vaga: sem espera
         delay = self.cfg.min_interval + random.uniform(0.0, self.cfg.jitter)
-        elapsed = time.monotonic() - self._last_download_ts
-        remaining = delay - elapsed
-        if remaining > 0:
-            self._sleep(remaining, "Aguardando intervalo:")
+        resta = delay - (time.monotonic() - ultimo_fim)
+        if resta > 0:
+            self._sleep(resta, "Aguardando intervalo:")
+
+    def _stagger(self) -> None:
+        """Com várias vagas, não deixa os downloads começarem todos no mesmo instante."""
+        folga = min(self.cfg.min_interval, 3.0) if self.cfg.max_downloads > 1 else 0.0
+        if folga <= 0:
+            return
+        with self._start_lock:
+            resta = self._last_start + folga - time.monotonic()
+            if resta > 0:
+                self._sleep(resta, "Escalonando downloads:")
+            self._last_start = time.monotonic()
 
     # ------------------------------------------------------------- execução
 
@@ -1016,47 +1093,120 @@ class DownloadEngine:
             self._log("warn", f"Playlist sem nome; gênero cai em {self.cfg.default_genre}.")
 
     def _process_queue(self) -> None:
-        """Baixa em série (para não estressar o servidor) e converte em paralelo."""
-        worker = _PostWorker(self)
+        """Baixa em várias vagas e converte em outras threads, tudo ao mesmo tempo."""
+        pool = _PostWorker(self, threads=self.cfg.max_conversions)
+        vagas = [
+            threading.Thread(target=self._download_loop, args=(pool,), name=f"download-{i + 1}",
+                             daemon=True)
+            for i in range(self.cfg.max_downloads)
+        ]
+        self._log("info", f"{self.cfg.max_downloads} download(s) e "
+                          f"{self.cfg.max_conversions} conversão(ões) simultâneos.")
         try:
-            while True:
-                self._check_control()
-                item = self.store.next_pending(exclude=worker.in_flight())
-                if item is None:
-                    if worker.pending:
-                        # Uma conversão que falhe devolve a faixa à fila.
-                        self._status("Aguardando as conversões terminarem...")
-                        worker.wait_idle()
-                        continue
-                    return
-
-                stats = self.store.stats()
-                position = stats.done + stats.failed + worker.pending + 1
-                label = item.title or item.video_id
-                self._status(f"[{position}/{stats.total}] {label}")
-
-                self._wait_rate_limit()
-                self._check_control()
-
-                self._log("info", f"[{position}/{stats.total}] Baixando: {label}")
-                try:
-                    job = self._fetch(item, position, stats.total)
-                except (Stopped, CookieError, CookieLoadError, EnvironmentProblem):
-                    raise
-                except Exception as exc:  # erro de rede, yt-dlp ou disco
-                    self._last_download_ts = time.monotonic()
-                    self._on_item_error(item, exc)
-                else:
-                    self._last_download_ts = time.monotonic()
-                    self._consecutive_failures = 0
-                    self._block_events = 0  # sucesso limpa o histórico de bloqueios
-                    self._log("info", f"Baixado: {label} (convertendo em segundo plano)")
-                    worker.submit(job)
-                finally:
-                    self._emit_stats()
+            for vaga in vagas:
+                vaga.start()
+            for vaga in vagas:
+                vaga.join()
         finally:
             # Mesmo parando ou sendo bloqueado: o que já foi baixado é convertido.
-            worker.close()
+            pool.close()
+            self._unificar_generos()
+        if self._fatal is not None:
+            raise self._fatal
+
+    def _unificar_generos(self) -> None:
+        """Fecha a corrida entre conversões: uma faixa sem gênero próprio pode ter
+        sido salva na pasta de reserva antes de outra do mesmo artista descobrir o
+        gênero dele. Aqui o artista inteiro passa para o gênero que predomina."""
+        if not self._artistas or not self.cfg.genre_per_artist \
+                or self.cfg.genre_source not in ("online", "metadata"):
+            return
+        try:
+            relatorio = reorganize(
+                self.store, Path(self.cfg.output_dir).expanduser(), self.cfg.folder_structure,
+                self.cfg.ascii_only, self.cfg.max_component_len, self.cfg.default_genre,
+                self.cfg.default_album, por_artista=True, artistas=set(self._artistas),
+                so_genero=True,
+            )
+        except Exception as exc:  # a biblioteca já está salva: isto é só o acabamento
+            self._log("warn", f"Não consegui unificar o gênero por artista: {exc}")
+            return
+        if relatorio.moved:
+            self._log("info", f"{relatorio.moved} faixa(s) passaram para o gênero que já "
+                              "predomina no artista.")
+
+    def _claim_next(self) -> Optional[QueueItem]:
+        """Pega a próxima faixa livre, sem que duas vagas peguem a mesma."""
+        with self._lock:
+            item = self.store.next_pending(exclude=list(self._active))
+            if item is not None:
+                self._active.add(item.video_id)
+            return item
+
+    def _download_loop(self, pool: _PostWorker) -> None:
+        """Uma vaga de download: pega faixas até a fila acabar ou algo fatal acontecer."""
+        ultimo_fim: Optional[float] = None
+        try:
+            while not self._halt.is_set():
+                self._check_control()
+                item = self._claim_next()
+                if item is None:
+                    with self._mudou:
+                        if not self._active:
+                            return
+                        # Outra vaga ou uma conversão pode devolver uma faixa à fila.
+                        self._status("Aguardando as conversões terminarem...")
+                        self._mudou.wait(timeout=0.5)
+                    continue
+
+                entregue = False
+                try:
+                    self._wait_unblocked()
+                    self._wait_rate_limit(ultimo_fim)
+                    self._stagger()
+                    self._check_control()
+
+                    stats = self.store.stats()
+                    with self._lock:
+                        posicao = stats.done + stats.failed + len(self._active)
+                    rotulo = item.title or item.video_id
+                    self._status(f"[{posicao}/{stats.total}] {rotulo}")
+                    self._log("info", f"[{posicao}/{stats.total}] Baixando: {rotulo}")
+                    try:
+                        job = self._fetch(item, posicao, stats.total)
+                    except (Stopped, CookieError, CookieLoadError, EnvironmentProblem):
+                        raise
+                    except Exception as exc:  # erro de rede, yt-dlp ou disco
+                        ultimo_fim = time.monotonic()
+                        self._on_item_error(item, exc)
+                    else:
+                        ultimo_fim = time.monotonic()
+                        with self._lock:
+                            self._consecutive_failures = 0
+                            self._block_events = 0  # sucesso limpa o histórico de bloqueios
+                        self._log("info", f"Baixado: {rotulo} (convertendo em segundo plano)")
+                        pool.submit(job)
+                        entregue = True  # a conversão libera a faixa quando terminar
+                except BaseException as exc:
+                    # Antes de liberar a faixa: senão outra vaga a pega de volta e
+                    # tenta de novo no instante em que o motor deveria parar.
+                    self._set_fatal(exc)
+                    raise
+                finally:
+                    with self._lock:
+                        self._percent.pop(threading.get_ident(), None)
+                    if not entregue:
+                        self._release(item.video_id)
+                    self._emit_progress()
+                    self._emit_stats()
+        except BaseException as exc:  # Stopped, bloqueio demais, ambiente: encerra todas as vagas
+            self._set_fatal(exc)
+
+    def _set_fatal(self, exc: BaseException) -> None:
+        with self._lock:
+            if self._fatal is None:
+                self._fatal = exc
+        self._halt.set()
 
     def _complete(self, job: _Job) -> None:
         """Roda na thread de conversão: termina a faixa e a marca como baixada."""
@@ -1126,7 +1276,8 @@ class DownloadEngine:
         )
         if final:
             self._log("warn", f"Faixa indisponível, ignorada: {item.title} — {message}")
-            self._consecutive_failures = 0
+            with self._lock:
+                self._consecutive_failures = 0
             return
 
         if attempts >= self.cfg.max_retries:
@@ -1140,9 +1291,12 @@ class DownloadEngine:
                 f"Falha {attempts}/{self.cfg.max_retries} em '{item.title}': {message}",
             )
 
-        self._consecutive_failures += 1
-        if self._consecutive_failures >= self.cfg.max_consecutive_failures:
-            self._consecutive_failures = 0
+        with self._lock:
+            self._consecutive_failures += 1
+            bloqueio = self._consecutive_failures >= self.cfg.max_consecutive_failures
+            if bloqueio:
+                self._consecutive_failures = 0
+        if bloqueio:
             self._handle_block(
                 f"{self.cfg.max_consecutive_failures} falhas consecutivas "
                 "(provável bloqueio do servidor)"

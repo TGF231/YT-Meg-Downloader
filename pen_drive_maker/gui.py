@@ -210,6 +210,27 @@ class OpcoesAvancadas(QDialog):
         form.addRow("Bloqueios até encerrar:", self.max_blocks)
         layout.addWidget(ritmo)
 
+        paralelo = QGroupBox("Simultaneidade")
+        form = QFormLayout(paralelo)
+        self.max_downloads = QSpinBox()
+        self.max_downloads.setRange(1, 6)
+        self.max_downloads.setValue(cfg.max_downloads)
+        self.max_downloads.setToolTip(
+            "Quantas músicas baixam ao mesmo tempo. Cada uma tem o seu intervalo, então "
+            "mais downloads simultâneos = mais requisições por minuto ao YouTube, e mais "
+            "risco de bloqueio. Com 1, é um download por vez."
+        )
+        form.addRow("Downloads simultâneos:", self.max_downloads)
+        self.max_conversions = QSpinBox()
+        self.max_conversions.setRange(1, 8)
+        self.max_conversions.setValue(cfg.max_conversions)
+        self.max_conversions.setToolTip(
+            "Quantas músicas convertem (áudio, tags, capa) ao mesmo tempo. Usa o "
+            "processador, não a rede: não aumenta o risco de bloqueio."
+        )
+        form.addRow("Conversões simultâneas:", self.max_conversions)
+        layout.addWidget(paralelo)
+
         arquivos = QGroupBox("Arquivos e metadados")
         form = QFormLayout(arquivos)
         self.embed_metadata = QCheckBox("Gravar metadados na tag")
@@ -290,6 +311,8 @@ class OpcoesAvancadas(QDialog):
         cfg.max_consecutive_failures = self.max_consecutive.value()
         cfg.block_base_backoff = self.block_backoff.value()
         cfg.max_block_events = self.max_blocks.value()
+        cfg.max_downloads = self.max_downloads.value()
+        cfg.max_conversions = self.max_conversions.value()
         cfg.embed_metadata = self.embed_metadata.isChecked()
         cfg.embed_thumbnail = self.embed_thumbnail.isChecked()
         cfg.ascii_only = self.ascii_only.isChecked()
@@ -537,7 +560,8 @@ class MainWindow(JanelaBase):
         self.min_interval.setSuffix(" s")
         self.min_interval.setMaximumWidth(160)
         self.min_interval.setToolTip(
-            "Espera mínima entre downloads. Valores baixos aumentam o risco de bloqueio."
+            "Espera mínima entre um download e o próximo da mesma vaga (veja Opções "
+            "avançadas → Simultaneidade). Valores baixos aumentam o risco de bloqueio."
         )
         direita.addRow("Intervalo entre downloads:", self.min_interval)
         self.estrutura = QLabel()
@@ -557,10 +581,10 @@ class MainWindow(JanelaBase):
         definir_papel(self.contadores, "secao")
         layout.addWidget(self.contadores)
         self.barra_playlist = QProgressBar()
-        self.barra_playlist.setFormat("Playlist: %p%")
+        self.barra_playlist.setFormat("Playlist: %v/%m  (%p%)")
         layout.addWidget(self.barra_playlist)
         self.barra_faixa = QProgressBar()
-        self.barra_faixa.setFormat("Faixa atual: %p%")
+        self.barra_faixa.setFormat("Agora: %p%")
         layout.addWidget(self.barra_faixa)
         self.rotulo_status = QLabel("Ocioso")
         layout.addWidget(self.rotulo_status)
@@ -799,7 +823,7 @@ class MainWindow(JanelaBase):
         self._ocupado = False
         self.barra_faixa.setMaximum(100)
         self.barra_faixa.setValue(0)
-        self.barra_faixa.setFormat("Faixa atual: %p%")
+        self.barra_faixa.setFormat("Agora: %p%")
         if self.store is not None:
             self._remontar_arvore()
             self._ao_stats(self.store.stats())
@@ -1507,7 +1531,7 @@ class MainWindow(JanelaBase):
     @Slot(float, str)
     def _ao_progresso(self, percentual: float, texto: str) -> None:
         self.barra_faixa.setValue(int(percentual))
-        self.barra_faixa.setFormat(f"Faixa atual: {texto}")
+        self.barra_faixa.setFormat(f"Agora: {texto}")
 
     @Slot(str, object)
     def _ao_item_pronto(self, caminho: str, tags: TrackTags) -> None:
@@ -1548,7 +1572,7 @@ class MainWindow(JanelaBase):
     def _ao_terminar_motor(self, motivo: str) -> None:
         self.statusBar().showMessage(motivo)
         self.barra_faixa.setValue(0)
-        self.barra_faixa.setFormat("Faixa atual: %p%")
+        self.barra_faixa.setFormat("Agora: %p%")
 
     @Slot()
     def _ao_terminar_thread(self) -> None:

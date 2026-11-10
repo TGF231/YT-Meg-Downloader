@@ -12,7 +12,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from pen_drive_maker.downloader import DownloadEngine, EngineCallbacks  # noqa: E402
 from pen_drive_maker.store import STATUS_DONE, STATUS_FAILED  # noqa: E402
 from test_engine import FakeYDL  # noqa: E402
-from test_library import URL_A, BibliotecaBase  # noqa: E402
+from test_library import URL_A, BibliotecaBase, _faixa  # noqa: E402
 
 
 def _esperar(condicao, limite=10.0):
@@ -129,6 +129,145 @@ class PipelineTest(BibliotecaBase):
             [p.name for p in pasta.glob("*Musica 1*")], [pathlib.Path(antigo).name],
             "baixar de novo não deve deixar uma segunda cópia",
         )
+
+
+class ParalelismoTest(BibliotecaBase):
+    """Mais de um download e mais de uma conversão ao mesmo tempo."""
+
+    def setUp(self):
+        super().setUp()
+        FakeYDL.eventos = []
+        FakeYDL.porta_pos = None
+        FakeYDL.porta_download = None
+        FakeYDL.falhas_pos = {}
+        FakeYDL.em_andamento = {"download": 0, "pos": 0}
+        FakeYDL.pico = {"download": 0, "pos": 0}
+        FakeYDL.tracks = {f"id{n:02d}": _faixa(n) for n in range(1, 9)}
+        FakeYDL.playlists = {URL_A: ("Viagem", [f"id{n:02d}" for n in range(1, 9)])}
+
+    def tearDown(self):
+        for porta in (FakeYDL.porta_pos, FakeYDL.porta_download):
+            if porta is not None:
+                porta.set()
+        FakeYDL.porta_pos = FakeYDL.porta_download = None
+        super().tearDown()
+
+    def _motor(self, downloads, conversoes):
+        cfg = self._cfg(self.raiz, URL_A, max_downloads=downloads, max_conversions=conversoes)
+        return DownloadEngine(cfg, self.store, EngineCallbacks(
+            log=lambda n, m: self.logs.append((n, m)),
+            file_progress=lambda p, t: self.progresso.append(t)))
+
+    def _rodar(self, motor):
+        self.progresso = []
+        t = threading.Thread(target=motor.run, daemon=True)
+        t.start()
+        return t
+
+    def test_several_downloads_run_at_the_same_time(self):
+        FakeYDL.porta_download = threading.Event()
+        motor = self._motor(3, 1)
+        t = self._rodar(motor)
+        juntos = _esperar(lambda: FakeYDL.pico["download"] == 3)
+        FakeYDL.porta_download.set()
+        t.join(15)
+        self.assertTrue(juntos, f"pico de downloads: {FakeYDL.pico['download']}")
+        self.assertEqual(self.store.stats().done, 8)
+
+    def test_a_single_slot_never_overlaps_downloads(self):
+        FakeYDL.porta_download = threading.Event()
+        FakeYDL.porta_download.set()
+        t = self._rodar(self._motor(1, 1))
+        t.join(15)
+        self.assertEqual(FakeYDL.pico["download"], 1)
+
+    def test_several_conversions_run_at_the_same_time(self):
+        FakeYDL.porta_pos = threading.Event()
+        motor = self._motor(4, 3)
+        t = self._rodar(motor)
+        juntas = _esperar(lambda: FakeYDL.pico["pos"] == 3)
+        FakeYDL.porta_pos.set()
+        t.join(15)
+        self.assertTrue(juntas, f"pico de conversões: {FakeYDL.pico['pos']}")
+        self.assertEqual(self.store.stats().done, 8)
+
+    def test_a_download_does_not_wait_for_a_slow_conversion(self):
+        """O caso do relato: a conversão da faixa 1 demora, e as outras seguem baixando."""
+        FakeYDL.porta_pos = threading.Event()
+        motor = self._motor(2, 1)
+        t = self._rodar(motor)
+        baixou_varias = _esperar(
+            lambda: len([e for e in FakeYDL.eventos if e[0] == "download"]) >= 4)
+        convertidas = [e for e in FakeYDL.eventos if e[0] == "pos"]
+        FakeYDL.porta_pos.set()
+        t.join(15)
+        self.assertTrue(baixou_varias, "os downloads travaram esperando a conversão")
+        self.assertEqual(convertidas, [])
+
+    def test_every_track_is_downloaded_exactly_once(self):
+        motor = self._motor(4, 4)
+        self._rodar(motor).join(15)
+        baixados = [e[1] for e in FakeYDL.eventos if e[0] == "download"]
+        self.assertEqual(sorted(baixados), [f"id{n:02d}" for n in range(1, 9)])
+        self.assertEqual(self.store.stats().done, 8)
+        itens = self.store.list_items(STATUS_DONE)
+        self.assertEqual(len({i.relpath for i in itens}), 8, "dois arquivos no mesmo caminho")
+
+    def test_same_name_tracks_converted_together_never_overwrite_each_other(self):
+        FakeYDL.tracks = {
+            "id01": {"id": "id01", "title": "Repetida", "artist": "A", "album": "X", "track_number": 1},
+            "id02": {"id": "id02", "title": "Repetida", "artist": "A", "album": "X", "track_number": 1},
+            "id03": {"id": "id03", "title": "Repetida", "artist": "A", "album": "X", "track_number": 1},
+        }
+        FakeYDL.playlists = {URL_A: ("Viagem", ["id01", "id02", "id03"])}
+        self._rodar(self._motor(3, 3)).join(15)
+        arquivos = [p for p in self.raiz.rglob("*.m4a")]
+        self.assertEqual(len(arquivos), 3, "uma faixa foi sobrescrita")
+
+    def test_the_bar_reports_downloads_and_conversions(self):
+        FakeYDL.porta_pos = threading.Event()
+        motor = self._motor(2, 2)
+        t = self._rodar(motor)
+        _esperar(lambda: any("convertendo" in x for x in self.progresso))
+        FakeYDL.porta_pos.set()
+        t.join(15)
+        self.assertTrue(any("convertendo" in x for x in self.progresso), self.progresso[-5:])
+
+    def test_a_fatal_error_in_one_slot_stops_all_of_them(self):
+        from pen_drive_maker.downloader import DownloadEngine as Motor
+        from yt_dlp.utils import DownloadError
+
+        FakeYDL.failures = {f"id{n:02d}": [DownloadError("ERROR: HTTP Error 429: Too Many Requests")] * 20
+                            for n in range(1, 9)}
+        cfg = self._cfg(self.raiz, URL_A, max_downloads=3, max_conversions=1, max_block_events=1)
+        razoes = []
+        motor = Motor(cfg, self.store, EngineCallbacks(
+            log=lambda n, m: self.logs.append((n, m)), finished=razoes.append))
+        motor._wait_unblocked = lambda: None  # sem esperar o backoff de verdade
+        t = threading.Thread(target=motor.run, daemon=True)
+        t.start()
+        t.join(15)
+        self.assertFalse(t.is_alive(), "o motor não encerrou")
+        self.assertTrue(razoes and "bloqueios repetidos" in razoes[0], razoes)
+
+    def test_a_block_found_by_one_slot_pauses_the_others(self):
+        from yt_dlp.utils import DownloadError
+
+        FakeYDL.failures = {"id01": [DownloadError("ERROR: HTTP Error 429: Too Many Requests")]}
+        motor = self._motor(3, 1)
+        esperas = []
+        real = motor._wait_unblocked
+
+        def observa():
+            esperas.append(motor._block_until)
+            real()
+
+        motor.cfg.block_base_backoff = 5.0
+        motor._wait_unblocked = observa
+        motor._sleep = lambda segundos, rotulo: setattr(motor, "_block_until", 0.0)
+        self._rodar(motor).join(15)
+        self.assertTrue(any(b > 0 for b in esperas), "as outras vagas deveriam ver o bloqueio")
+        self.assertEqual(self.store.stats().done, 8)
 
 
 class NextPendingTest(BibliotecaBase):

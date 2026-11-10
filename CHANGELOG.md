@@ -3,6 +3,26 @@
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o
 versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
+## [2.4.0] - 2026-11-10
+
+### Adicionado
+
+- **Vários downloads e várias conversões ao mesmo tempo.** *Opções avançadas →
+  Simultaneidade*: downloads simultâneos (padrão 2) e conversões simultâneas
+  (padrão 2). Cada vaga de download respeita o seu intervalo; os inícios são
+  escalonados. A conversão de uma faixa nunca segura o download da próxima.
+- Um bloqueio detectado por uma vaga pausa todas; um erro fatal encerra todas.
+
+### Alterado
+
+- **Barras de progresso.** *Agora* mostra a média dos downloads em curso e
+  quantas faixas estão convertendo; *Playlist* mostra `feitas/total`. Antes a
+  barra só acompanhava um download, que dura poucos segundos, e quase não se
+  movia.
+- O gênero "um artista, um gênero" ignora o gênero de reserva (nome da
+  playlist) na votação e é unificado ao fim da execução, para a ordem em que as
+  conversões terminam não dividir um artista em duas pastas.
+
 ## [2.3.0] - 2026-11-10
 
 ### Corrigido
@@ -400,6 +420,7 @@ Primeira versão.
 - Interface PySide6 com contadores, barras de progresso, log colorido, árvore
   da estrutura de pastas criada e controles de pausar, retomar e parar.
 
+[2.4.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v2.4.0
 [2.3.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v2.3.0
 [2.2.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v2.2.0
 [2.1.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v2.1.0

@@ -46,6 +46,12 @@ class AppConfig:
     min_interval: float = 25.0
     jitter: float = 15.0
 
+    # Quantas faixas baixam ao mesmo tempo e quantas convertem ao mesmo tempo.
+    # O intervalo vale por "vaga" de download: mais vagas = mais requisições por
+    # minuto ao YouTube, e com isso mais risco de bloqueio.
+    max_downloads: int = 2
+    max_conversions: int = 2
+
     audio_format: str = "mp3"
     # Vazio = busca automática. Aceita o executável ou a pasta que o contém.
     ffmpeg_path: str = ""
@@ -129,6 +135,8 @@ class AppConfig:
         self.block_max_backoff = max(self.block_base_backoff, float(self.block_max_backoff))
         self.max_block_events = max(1, int(self.max_block_events))
         self.max_component_len = max(16, int(self.max_component_len))
+        self.max_downloads = min(6, max(1, int(self.max_downloads)))
+        self.max_conversions = min(8, max(1, int(self.max_conversions)))
         self.genre_groups = str(self.genre_groups or "").strip()
         if self.genre_groups and not self.genre_group_map():
             self.genre_groups = ""  # nada aproveitável: volta ao padrão

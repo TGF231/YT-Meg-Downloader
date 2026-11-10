@@ -418,23 +418,35 @@ class QueueStore:
             ).fetchone()
         return self._row_to_item(row) if row else None
 
-    def artist_genre(self, artist: str) -> Optional[str]:
+    def playlist_titles(self) -> set:
+        """Nomes das playlists, em minúsculas: são o gênero de reserva, não uma resposta."""
+        with self._lock:
+            rows = self._conn.execute("SELECT title FROM playlists").fetchall()
+        return {str(r["title"] or "").strip().lower() for r in rows if r["title"]}
+
+    def artist_genre(self, artist: str, ignorar: Iterable[str] = ()) -> Optional[str]:
         """Gênero que predomina entre as faixas já baixadas deste artista.
 
         Empate: o que chegou primeiro. É o que mantém um artista numa pasta
-        só, em vez de uma faixa em Pop e outra em Eletronica.
+        só, em vez de uma faixa em Pop e outra em Eletronica. `ignorar` lista
+        gêneros que não contam (o de reserva, por exemplo: ele só diz que ninguém
+        soube o gênero da faixa).
         """
         artista = (artist or "").strip().lower()
         if not artista:
             return None
+        fora = {str(g).strip().lower() for g in ignorar}
         with self._lock:
-            row = self._conn.execute(
+            rows = self._conn.execute(
                 "SELECT genre FROM items WHERE status = ? AND genre != '' "
                 "AND LOWER(artist) = ? GROUP BY genre "
-                "ORDER BY COUNT(*) DESC, MIN(rowid) LIMIT 1",
+                "ORDER BY COUNT(*) DESC, MIN(rowid)",
                 (STATUS_DONE, artista),
-            ).fetchone()
-        return row["genre"] if row else None
+            ).fetchall()
+        for row in rows:
+            if row["genre"].strip().lower() not in fora:
+                return row["genre"]
+        return None
 
     def filepath_owner(self, stem: str) -> Optional[str]:
         """Quem já ocupa um arquivo com este caminho (absoluto, sem extensão).

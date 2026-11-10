@@ -35,24 +35,41 @@ Cada faixa gasta **uma** extração de rede: o dicionário de informações obti
 reaproveitado no download (mesmo caminho do `--load-info-json` do `yt-dlp`), em
 vez de extrair a página duas vezes.
 
-### Download e conversão em paralelo
+### Vários downloads e várias conversões ao mesmo tempo
 
-São duas filas. Os **downloads** continuam em série e com intervalo (é o que
-poupa o servidor), mas a **conversão** — extrair o áudio, gravar as tags, embutir
-a capa, renomear e mover para a pasta certa — roda numa thread própria. Enquanto
-uma faixa converte, a próxima já está baixando; o intervalo entre downloads
-passa a ser o único tempo de espera.
+O trabalho é dividido em duas etapas que rodam em paralelo, cada uma com o seu
+número de "vagas" (*Opções avançadas → Simultaneidade*):
 
+- **Downloads simultâneos** (padrão 2, de 1 a 6): quantas músicas baixam ao mesmo
+  tempo. Cada vaga respeita o **Intervalo entre downloads** e o jitter por conta
+  própria, e os inícios são escalonados em alguns segundos para não saírem todos
+  no mesmo instante. Mais vagas = mais requisições por minuto ao YouTube, e com
+  isso mais risco de bloqueio; com 1, volta a ser um download por vez.
+- **Conversões simultâneas** (padrão 2, de 1 a 8): quantas músicas convertem ao
+  mesmo tempo — extrair o áudio, gravar as tags, embutir a capa, renomear e
+  mover para a pasta certa. Usa o processador, não a rede: não aumenta o risco
+  de bloqueio.
+
+Nenhuma etapa espera a outra: a conversão de uma faixa nunca segura o download da
+próxima. A barra **Agora** mostra a média dos downloads em curso e quantas faixas
+estão convertendo; a barra **Playlist** mostra `feitas/total`.
+
+- Uma música nunca é pega por duas vagas, e duas faixas com o mesmo nome não se
+  sobrescrevem (a segunda ganha o id do vídeo no nome).
+- Um **bloqueio** detectado por uma vaga pausa **todas**: o backoff vale para o
+  programa inteiro. Um erro fatal (cookies, ambiente, bloqueios demais) encerra
+  todas as vagas.
 - O áudio cru espera em `.pen-drive-maker/staging/` (pasta oculta, fora da
   biblioteca) e só aparece na estrutura de pastas quando está pronto. Uma queda
   no meio nunca deixa um arquivo pela metade entre as suas músicas.
-- A fila entre as duas etapas é curta (3 faixas): se a conversão atrasar, o
-  download espera, em vez de encher o disco de áudio cru.
+- A fila entre as duas etapas é curta: se a conversão atrasar, os downloads
+  esperam, em vez de encher o disco de áudio cru.
 - **Parar** (ou um bloqueio) não perde trabalho: o que já foi baixado termina de
   converter antes de o programa encerrar.
 - Se uma conversão falhar, só aquela faixa conta uma tentativa; as outras seguem.
-  Um arquivo que não é da faixa e já ocupa o destino nunca é sobrescrito: a
-  faixa nova ganha o id do vídeo no nome.
+- **Um artista, um gênero** vale também em paralelo: ao fim da execução, faixas
+  de um artista que caíram na pasta de reserva porque outra, do mesmo artista,
+  ainda não tinha descoberto o gênero passam para o gênero que predomina.
 
 ## Instalação
 
