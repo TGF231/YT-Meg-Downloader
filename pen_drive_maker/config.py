@@ -20,6 +20,21 @@ STATE_DIRNAME = ".pen-drive-maker"
 DB_FILENAME = "queue.db"
 
 
+def _as_bool(valor: Any, padrao: bool = False) -> bool:
+    """O QSettings devolve bool como texto ("true"/"false") no registro e no .ini.
+
+    "false" é verdadeiro em Python: sem esta conversão a opção desligada vale
+    como ligada, e a tela de opções nem abre (setChecked não aceita texto).
+    """
+    if isinstance(valor, bool):
+        return valor
+    if valor is None:
+        return padrao
+    if isinstance(valor, (int, float)):
+        return bool(valor)
+    return str(valor).strip().lower() in ("true", "1", "yes", "sim", "on")
+
+
 @dataclass
 class AppConfig:
     """Parâmetros de execução. Todos ajustáveis pela interface."""
@@ -51,6 +66,14 @@ class AppConfig:
     # Agrupa subgêneros (Dance/House/Electronic -> Eletronica) para a playlist
     # não se espalhar por muitas pastas.
     group_subgenres: bool = True
+    # Regras do agrupamento, uma linha por grupo ("Pasta: pedaço, pedaço").
+    # Vazio = as regras padrão do programa.
+    genre_groups: str = ""
+    # Gênero que nenhum grupo reconhece: False = usa o gênero de reserva (nome da
+    # playlist), True = cria uma pasta com o nome que a internet devolveu.
+    genre_keep_unmapped: bool = False
+    # Um artista, um gênero: as faixas dele seguem o gênero que já predomina.
+    genre_per_artist: bool = True
     default_genre: str = "Sem Genero"
     default_album: str = "Singles"
     # Níveis de pasta — veja organizer.FOLDER_STRUCTURES. O que sai da pasta
@@ -65,6 +88,12 @@ class AppConfig:
     block_base_backoff: float = 120.0
     block_max_backoff: float = 3600.0
     max_block_events: int = 5
+
+    def genre_group_map(self):
+        """Regras de agrupamento como dicionário, ou None para o padrão."""
+        from .genre import parse_groups
+
+        return parse_groups(self.genre_groups) or None
 
     def state_dir(self) -> Path:
         return Path(self.output_dir).expanduser() / STATE_DIRNAME
@@ -88,6 +117,10 @@ class AppConfig:
         return cfg
 
     def normalize(self) -> None:
+        for nome in ("allow_remote_components", "embed_thumbnail", "embed_metadata",
+                     "group_subgenres", "ascii_only", "genre_keep_unmapped",
+                     "genre_per_artist"):
+            setattr(self, nome, _as_bool(getattr(self, nome)))
         self.min_interval = max(0.0, float(self.min_interval))
         self.jitter = max(0.0, float(self.jitter))
         self.max_retries = max(1, int(self.max_retries))
@@ -96,6 +129,9 @@ class AppConfig:
         self.block_max_backoff = max(self.block_base_backoff, float(self.block_max_backoff))
         self.max_block_events = max(1, int(self.max_block_events))
         self.max_component_len = max(16, int(self.max_component_len))
+        self.genre_groups = str(self.genre_groups or "").strip()
+        if self.genre_groups and not self.genre_group_map():
+            self.genre_groups = ""  # nada aproveitável: volta ao padrão
         if self.audio_format not in AUDIO_FORMATS:
             self.audio_format = "mp3"
         if self.cookies_mode not in ("none", "file", "browser"):

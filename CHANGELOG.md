@@ -3,6 +3,37 @@
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o
 versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
+## [2.3.0] - 2026-11-10
+
+### Corrigido
+
+- **Opções avançadas não abria.** O QSettings do Windows devolve as opções
+  ligadas/desligadas como texto (`"false"`), e a tela quebrava sem mostrar
+  nada. Os valores agora são convertidos ao ler, e uma falha ao abrir a tela
+  aparece numa mensagem em vez de sumir. Antes, `"false"` valia como ligado:
+  uma opção desligada podia continuar ativa.
+- **Agrupamento de gêneros errado.** O casamento por pedaço de texto confundia
+  *Dancehall* com `dance`, *Reggaeton* com `reggae` e *Música Popular
+  Brasileira* com `pop`. Agora só palavras inteiras contam, e em *Dance Pop* ou
+  *Folk Rock* vale a última palavra (o gênero de base).
+
+### Adicionado
+
+- **Editar o agrupamento de subgêneros** (*Opções avançadas → Editar
+  agrupamento…*), com campo de teste ao vivo e botão de restaurar o padrão.
+- **Rótulos que não são gênero** (*Bollywood*, *Soundtrack*, *Anime*…) não viram
+  mais pasta: a faixa usa o gênero de reserva. O grupo `(ignorar)` é editável.
+- **Gêneros fora dos grupos** caem na reserva em vez de criar uma pasta para cada
+  rótulo da internet (opção de manter o nome devolvido).
+- **Um artista, um gênero**: as faixas de um artista seguem o gênero que já
+  predomina na biblioteca.
+- *Aplicar estrutura atual aos arquivos* agora aplica as regras de gênero atuais
+  ao que já foi baixado e regrava a tag de gênero dos arquivos movidos.
+
+### Alterado
+
+- *Soundtrack* e *Score* saíram do grupo `Classica`: viram rótulos ignorados.
+
 ## [2.2.0] - 2026-11-03
 
 ### Alterado
@@ -369,6 +400,7 @@ Primeira versão.
 - Interface PySide6 com contadores, barras de progresso, log colorido, árvore
   da estrutura de pastas criada e controles de pausar, retomar e parar.
 
+[2.3.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v2.3.0
 [2.2.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v2.2.0
 [2.1.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v2.1.0
 [2.0.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v2.0.0

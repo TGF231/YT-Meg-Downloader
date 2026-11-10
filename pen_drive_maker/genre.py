@@ -51,6 +51,9 @@ _TITLE_NOISE_TAIL = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# Nome do grupo especial cujos pedaços NÃO são gêneros (veja abaixo).
+IGNORAR = "(ignorar)"
+
 # Agrupamento de subgêneros. A chave é o nome da pasta; os valores são
 # pedaços que podem aparecer na resposta da API.
 GRUPOS: Dict[str, tuple] = {
@@ -63,8 +66,8 @@ GRUPOS: Dict[str, tuple] = {
         "rock", "alternative", "metal", "punk", "grunge", "indie", "emo",
         "hardcore", "post-punk", "shoegaze",
     ),
-    "Pop": ("pop", "k-pop", "j-pop", "synth", "new wave"),
-    "Hip Hop": ("hip hop", "hip-hop", "rap", "trap"),
+    "Pop": ("pop", "k-pop", "j-pop", "synth", "new wave", "electropop", "synthpop", "europop"),
+    "Hip Hop": ("hip hop", "hip-hop", "hiphop", "rap", "trap"),
     "R&B e Soul": ("r&b", "soul", "funk", "motown", "disco"),
     "MPB": (
         "mpb", "bossa", "samba", "pagode", "forró", "forro", "axé", "axe",
@@ -72,11 +75,18 @@ GRUPOS: Dict[str, tuple] = {
     ),
     "Sertanejo": ("sertanejo", "música caipira"),
     "Jazz e Blues": ("jazz", "blues", "bebop", "swing"),
-    "Classica": ("classical", "clássica", "opera", "ópera", "soundtrack", "score"),
+    "Classica": ("classical", "clássica", "opera", "ópera"),
     "Reggae": ("reggae", "ska", "dancehall"),
     "Gospel": ("gospel", "christian", "worship", "religios"),
     "Country": ("country", "bluegrass", "folk"),
     "Latina": ("latin", "latino", "reggaeton", "salsa", "cumbia", "tango"),
+    # Rótulos que dizem de onde a música vem (um filme, um país, uma ocasião) e
+    # não como ela soa: não viram pasta. A faixa fica com o gênero de reserva.
+    IGNORAR: (
+        "bollywood", "tollywood", "kollywood", "indian", "soundtrack", "score",
+        "original score", "musicals", "anime", "karaoke", "holiday", "christmas",
+        "natal", "spoken word", "audiobooks", "comedy", "children", "infantil",
+    ),
 }
 
 
@@ -91,14 +101,103 @@ def clean_title(title: str) -> str:
     return re.sub(r"\s+", " ", title).strip(" -–—")
 
 
-def group_genre(raw: str) -> str:
-    """Reduz o gênero da API a um dos grupos; devolve o original se não casar."""
-    alvo = strip_accents(raw or "").lower()
-    for pasta, pedacos in GRUPOS.items():
+def groups_to_text(grupos: Dict[str, tuple]) -> str:
+    """Uma linha por grupo: `Pasta: pedaço, pedaço, ...` (o formato da tela)."""
+    return "\n".join(f"{pasta}: {', '.join(pedacos)}" for pasta, pedacos in grupos.items())
+
+
+def parse_groups(texto: str) -> Dict[str, tuple]:
+    """Lê o formato de `groups_to_text`. Linhas vazias e `#` são ignoradas.
+
+    Vazio (ou sem nenhum grupo válido) devolve {}: quem chama usa o padrão.
+    Um grupo repetido soma os pedaços; a ordem das linhas é a ordem de teste.
+    """
+    grupos: Dict[str, list] = {}
+    for linha in (texto or "").splitlines():
+        linha = linha.strip()
+        if not linha or linha.startswith("#") or ":" not in linha:
+            continue
+        pasta, _, resto = linha.partition(":")
+        pasta = pasta.strip()
+        pedacos = [p.strip() for p in resto.split(",") if p.strip()]
+        if pasta and pedacos:
+            grupos.setdefault(pasta, []).extend(pedacos)
+    return {pasta: tuple(pedacos) for pasta, pedacos in grupos.items()}
+
+
+def _normalizar(texto: str) -> str:
+    """Minúsculas, sem acento e só com palavras: "Drum & Bass" -> "drum and bass"."""
+    texto = strip_accents(texto or "").lower().replace("&", " and ")
+    return re.sub(r"[^a-z0-9]+", " ", texto).strip()
+
+
+def match_genre(raw: str, grupos: Optional[Dict[str, tuple]] = None) -> tuple:
+    """Classifica o gênero cru da API. Devolve (pasta, estado).
+
+    estado: "grupo" (casou com um grupo), "ignorado" (só casou com rótulos de
+    `IGNORAR`) ou "desconhecido" (não casou com nada).
+
+    Três regras mantêm o resultado previsível:
+
+    - um pedaço só casa com **palavras inteiras**: "dance" não está em
+      "Dancehall", nem "pop" em "Popular", nem "rap" em "Therapy";
+    - em "Dance Pop" ou "Folk Rock" vale a **última** palavra, que é o gênero
+      de base (o resto o qualifica): vira Pop e Rock, não Eletronica e Country;
+    - "Hip-Hop/Rap" e "Pop/Rock" têm alternativas: vale a primeira que casar.
+    """
+    grupos = grupos or GRUPOS
+    pecas = []  # (palavras, pasta, ordem)
+    for ordem, (pasta, pedacos) in enumerate(grupos.items()):
         for pedaco in pedacos:
-            if strip_accents(pedaco).lower() in alvo:
-                return pasta
-    return raw
+            palavras = tuple(_normalizar(pedaco).split())
+            if palavras:
+                pecas.append((palavras, pasta, ordem))
+
+    ignorado = False
+    for segmento in re.split(r"[/;,|]", raw or ""):
+        texto = _normalizar(segmento).split()
+        melhor = None
+        for palavras, pasta, ordem in pecas:
+            n = len(palavras)
+            for i in range(len(texto) - n + 1):
+                if tuple(texto[i:i + n]) != palavras:
+                    continue
+                if pasta == IGNORAR:
+                    ignorado = True
+                    continue
+                # mais à direita, depois o pedaço mais longo, depois a ordem
+                chave = (i + n, n, -ordem)
+                if melhor is None or chave > melhor[0]:
+                    melhor = (chave, pasta)
+        if melhor is not None:
+            return melhor[1], "grupo"
+    return None, ("ignorado" if ignorado else "desconhecido")
+
+
+def group_genre(raw: str, grupos: Optional[Dict[str, tuple]] = None) -> str:
+    """Reduz o gênero da API a um dos grupos; devolve o original se não casar."""
+    pasta, _estado = match_genre(raw, grupos)
+    return pasta or raw
+
+
+def resolve_genre(
+    raw: str, grupos: Optional[Dict[str, tuple]] = None, manter_desconhecidos: bool = False
+) -> Optional[str]:
+    """Pasta de gênero para o que a API devolveu, ou None se não serve.
+
+    None manda quem chamou para o gênero de reserva (nome da playlist). Isso
+    vale para rótulos ignorados ("Bollywood") e, a menos que se peça para
+    mantê-los, para gêneros que nenhum grupo reconhece: melhor uma pasta que
+    já existe do que uma nova para cada rótulo estranho da API.
+    """
+    if not (raw or "").strip():
+        return None
+    pasta, estado = match_genre(raw, grupos)
+    if pasta:
+        return pasta
+    if estado == "desconhecido" and manter_desconhecidos:
+        return raw
+    return None
 
 
 def _tokens(texto: str) -> set:
@@ -120,6 +219,8 @@ class GenreLookup:
         self,
         cache,
         group: bool = True,
+        grupos: Optional[Dict[str, tuple]] = None,
+        manter_desconhecidos: bool = False,
         timeout: float = 10.0,
         min_interval: float = 1.0,
         max_failures: int = 5,
@@ -127,6 +228,8 @@ class GenreLookup:
     ):
         self._cache = cache
         self._group = group
+        self._grupos = grupos or None  # None = os grupos padrão
+        self._manter = manter_desconhecidos
         self._timeout = timeout
         self._min_interval = min_interval
         self._max_failures = max_failures
@@ -135,6 +238,26 @@ class GenreLookup:
         self._last_call = 0.0
         self._failures = 0
         self.disabled = False
+
+    def _resolver(self, bruto: str) -> Optional[str]:
+        if not self._group:
+            return bruto
+        return resolve_genre(bruto, self._grupos, self._manter)
+
+    def cached(self, artist: str, title: str) -> Optional[str]:
+        """Gênero já consultado, pelas regras atuais. Nunca vai à rede.
+
+        None = nada em cache. "" = há resposta, mas ela não serve como pasta
+        (rótulo ignorado ou fora dos grupos): use o gênero de reserva.
+        """
+        artist, title = (artist or "").strip(), clean_title(title)
+        if not title:
+            return None
+        chave = f"{strip_accents(artist).lower()}|{strip_accents(title).lower()}"
+        guardado = self._cache.get_genre(chave)
+        if not guardado:
+            return None
+        return self._resolver(guardado) or ""
 
     def lookup(self, artist: str, title: str) -> Optional[str]:
         artist, title = (artist or "").strip(), clean_title(title)
@@ -148,7 +271,7 @@ class GenreLookup:
                 return None  # string vazia = já consultamos e não há
             # O cache guarda a resposta crua: assim ligar ou desligar o
             # agrupamento vale na hora, sem precisar consultar tudo de novo.
-            return group_genre(guardado) if self._group else guardado
+            return self._resolver(guardado)
 
         if self.disabled:
             return None
@@ -162,7 +285,7 @@ class GenreLookup:
         self._cache.set_genre(chave, bruto or "")
         if not bruto:
             return None
-        return group_genre(bruto) if self._group else bruto
+        return self._resolver(bruto)
 
     def _fetch(self, artist: str, title: str) -> tuple:
         """Devolve ("ok"|"vazio"|"erro", gênero)."""

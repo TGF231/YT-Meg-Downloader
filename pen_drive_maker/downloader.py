@@ -806,6 +806,22 @@ class DownloadEngine:
             raise RuntimeError("O download não gerou arquivo.")
         return _Job(item, info, result, raw, staging, position, total, started)
 
+    def _genero_do_artista(self, tags: TrackTags) -> TrackTags:
+        """Um artista, um gênero: segue o que já predomina na biblioteca.
+
+        Só vale quando o gênero vem da internet ou dos metadados da faixa, que
+        variam de música para música; o nome da playlist e o gênero fixo são
+        escolhas do usuário e não se mexem.
+        """
+        if not self.cfg.genre_per_artist or self.cfg.genre_source not in ("online", "metadata"):
+            return tags
+        conhecido = self.store.artist_genre(tags.artist)
+        if conhecido and conhecido != tags.genre:
+            self._log("debug", f"Gênero de {tags.artist}: {tags.genre} -> {conhecido} "
+                               "(o que já predomina na biblioteca)")
+            return replace(tags, genre=conhecido)
+        return tags
+
     def _finish(self, job: "_Job") -> tuple[str, TrackTags]:
         """Etapa local: tags, conversão, capa e mover para a pasta certa."""
         item, info = job.item, job.info
@@ -825,6 +841,7 @@ class DownloadEngine:
                 tags = replace(tags, genre=encontrado)
             else:
                 self._log("debug", f"Gênero não encontrado para {tags.artist} - {tags.title}")
+        tags = self._genero_do_artista(tags)
         raiz = Path(self.cfg.output_dir).expanduser().resolve()
         if item.pinned and item.relpath:
             # Local escolhido à mão (ou vindo de outra biblioteca): vale mais
@@ -983,7 +1000,9 @@ class DownloadEngine:
         self._playlist_genre = (row["title"] if row else "") or ""
         if self.cfg.genre_source == "online":
             self._genre_lookup = GenreLookup(
-                self.store, group=self.cfg.group_subgenres, log=self._log
+                self.store, group=self.cfg.group_subgenres,
+                grupos=self.cfg.genre_group_map(),
+                manter_desconhecidos=self.cfg.genre_keep_unmapped, log=self._log
             )
             reserva = self._playlist_genre or self.cfg.default_genre
             self._log("info", f'Gênero consultado na internet; reserva: "{reserva}".')

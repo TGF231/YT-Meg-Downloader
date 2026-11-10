@@ -42,6 +42,7 @@ from .assinatura.janela import JanelaBase
 from .biblioteca_ui import PaginaBiblioteca, TarefaThread
 from .config import AUDIO_FORMATS, BROWSERS, AppConfig
 from .downloader import DownloadEngine, EngineCallbacks, check_cookies
+from .genre import GRUPOS, GenreLookup, group_genre, groups_to_text, parse_groups
 from .identify import find_loose, identify, refinar_lote, vincular
 from .library import (
     ImportError_,
@@ -107,6 +108,72 @@ class EngineThread(QThread):
         self._engine.run(force_reextract=self._force)
 
 
+class GruposDeGenero(QDialog):
+    """Edita as regras que juntam subgêneros numa pasta só."""
+
+    def __init__(self, texto: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Agrupamento de subgêneros")
+        self.setMinimumSize(560, 520)
+        layout = QVBoxLayout(self)
+        explicacao = QLabel(
+            "Cada linha é uma pasta de gênero e os pedaços de nome que levam a ela:\n"
+            "    Eletronica: dance, house, techno\n"
+            "O gênero devolvido pela internet é comparado sem acento e sem diferenciar "
+            "maiúsculas; vale o primeiro grupo, de cima para baixo, que tiver um pedaço "
+            "dentro do gênero. O que não casar com nenhum grupo mantém o nome original."
+        )
+        explicacao.setWordWrap(True)
+        definir_papel(explicacao, "dica")
+        layout.addWidget(explicacao)
+
+        self.editor = QPlainTextEdit()
+        self.editor.setPlainText(texto or groups_to_text(GRUPOS))
+        layout.addWidget(self.editor, 1)
+
+        teste = QHBoxLayout()
+        self.exemplo = QLineEdit()
+        self.exemplo.setPlaceholderText("Teste: digite um gênero, como House ou Brazilian")
+        self.resultado = QLabel("")
+        teste.addWidget(self.exemplo, 1)
+        teste.addWidget(QLabel("vira a pasta:"))
+        teste.addWidget(self.resultado)
+        layout.addLayout(teste)
+
+        padrao = QPushButton("Restaurar padrão")
+        padrao.clicked.connect(self._restaurar)
+        botoes = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        botoes.addButton(padrao, QDialogButtonBox.ButtonRole.ResetRole)
+        botoes.accepted.connect(self.accept)
+        botoes.rejected.connect(self.reject)
+        layout.addWidget(botoes)
+
+        self.editor.textChanged.connect(self._testar)
+        self.exemplo.textChanged.connect(self._testar)
+
+    def _restaurar(self) -> None:
+        self.editor.setPlainText(groups_to_text(GRUPOS))
+
+    def _testar(self) -> None:
+        bruto = self.exemplo.text().strip()
+        if not bruto:
+            self.resultado.setText("")
+            return
+        grupos = parse_groups(self.editor.toPlainText()) or None
+        self.resultado.setText(group_genre(bruto, grupos))
+
+    def texto(self) -> str:
+        """Vazio quando igual ao padrão: assim o programa segue as regras novas
+        de uma versão futura em vez de congelar as de hoje."""
+        atual = self.editor.toPlainText().strip()
+        grupos = parse_groups(atual)
+        if not grupos or grupos == {k: tuple(v) for k, v in GRUPOS.items()}:
+            return ""
+        return atual
+
+
 class OpcoesAvancadas(QDialog):
     """O que raramente muda sai da tela principal e vem parar aqui."""
 
@@ -157,6 +224,24 @@ class OpcoesAvancadas(QDialog):
         self.group_subgenres = QCheckBox("Agrupar subgêneros (Dance/House → Eletronica)")
         self.group_subgenres.setChecked(cfg.group_subgenres)
         form.addRow("", self.group_subgenres)
+        self.genre_per_artist = QCheckBox("Um artista, um gênero (segue o que já predomina)")
+        self.genre_per_artist.setChecked(cfg.genre_per_artist)
+        self.genre_per_artist.setToolTip(
+            "Evita o mesmo artista espalhado por várias pastas de gênero quando a "
+            "internet devolve um rótulo diferente para cada música."
+        )
+        form.addRow("", self.genre_per_artist)
+        self.genre_keep_unmapped = QCheckBox("Manter gêneros que nenhum grupo reconhece")
+        self.genre_keep_unmapped.setChecked(cfg.genre_keep_unmapped)
+        self.genre_keep_unmapped.setToolTip(
+            "Desligado (recomendado): um gênero fora dos grupos, como 'Bollywood', não "
+            "vira pasta e a faixa usa o gênero de reserva (nome da playlist)."
+        )
+        form.addRow("", self.genre_keep_unmapped)
+        self._genre_groups = cfg.genre_groups
+        editar = QPushButton("Editar agrupamento…")
+        editar.clicked.connect(self._editar_grupos)
+        form.addRow("Regras de agrupamento:", editar)
         self.default_genre = QLineEdit(cfg.default_genre)
         form.addRow("Gênero de reserva:", self.default_genre)
         self.default_album = QLineEdit(cfg.default_album)
@@ -187,6 +272,11 @@ class OpcoesAvancadas(QDialog):
         botoes.rejected.connect(self.reject)
         layout.addWidget(botoes)
 
+    def _editar_grupos(self) -> None:
+        dialogo = GruposDeGenero(self._genre_groups, self)
+        if dialogo.exec() == QDialog.DialogCode.Accepted:
+            self._genre_groups = dialogo.texto()
+
     def _escolher_ffmpeg(self) -> None:
         escolhido, _ = QFileDialog.getOpenFileName(
             self, "Executável do ffmpeg", self.ffmpeg_path.text().strip() or str(Path.home())
@@ -204,6 +294,9 @@ class OpcoesAvancadas(QDialog):
         cfg.embed_thumbnail = self.embed_thumbnail.isChecked()
         cfg.ascii_only = self.ascii_only.isChecked()
         cfg.group_subgenres = self.group_subgenres.isChecked()
+        cfg.genre_groups = self._genre_groups
+        cfg.genre_per_artist = self.genre_per_artist.isChecked()
+        cfg.genre_keep_unmapped = self.genre_keep_unmapped.isChecked()
         cfg.default_genre = self.default_genre.text().strip() or "Sem Genero"
         cfg.default_album = self.default_album.text().strip() or "Singles"
         cfg.ffmpeg_path = self.ffmpeg_path.text().strip()
@@ -903,17 +996,27 @@ class MainWindow(JanelaBase):
         if not self._perguntar(
             "Aplicar estrutura atual",
             "Mover os arquivos já baixados para a estrutura de pastas escolhida?",
-            "Nada é baixado de novo: os arquivos só mudam de pasta. Faixas fixadas "
-            "(postas à mão) ficam onde estão. Pastas que ficarem vazias são removidas.",
+            "Nada é baixado de novo: os arquivos só mudam de pasta, já pelas regras "
+            "atuais de agrupamento de gênero. Faixas fixadas (postas à mão) ficam onde "
+            "estão. Pastas que ficarem vazias são removidas.",
             "Mover arquivos",
         ):
             return
+        # Mudou o agrupamento de subgêneros? Os gêneros já consultados (em cache)
+        # passam pelas regras atuais, então a pasta acompanha sem ir à rede.
+        regrupar = None
+        if cfg.genre_source == "online" and cfg.group_subgenres:
+            regrupar = GenreLookup(
+                store, group=True, grupos=cfg.genre_group_map(),
+                manter_desconhecidos=cfg.genre_keep_unmapped,
+            ).cached
         self._rodar_tarefa(
             "Reorganizando a biblioteca",
             lambda progresso, stop: reorganize(
                 store, self._raiz(), cfg.folder_structure, cfg.ascii_only,
                 cfg.max_component_len, cfg.default_genre, cfg.default_album,
-                progresso, stop,
+                progresso, stop, regrupar,
+                cfg.genre_per_artist and cfg.genre_source in ("online", "metadata"),
             ),
             lambda r: self.registrar(
                 "ok", f"{r.moved} arquivo(s) movidos; {r.kept_pinned} fixado(s) mantidos "
@@ -1142,7 +1245,13 @@ class MainWindow(JanelaBase):
         self._linhas_log = []
 
     def abrir_opcoes(self) -> None:
-        dialogo = OpcoesAvancadas(self.config_atual(), self)
+        try:
+            dialogo = OpcoesAvancadas(self.config_atual(), self)
+        except Exception as erro:  # sem console no executável: o erro tem de aparecer na tela
+            self.registrar("error", f"Não foi possível abrir as opções: {type(erro).__name__}: {erro}")
+            QMessageBox.critical(self, "Opções avançadas",
+                                 f"Não foi possível abrir as opções:\n{erro}")
+            return
         if dialogo.exec() == QDialog.DialogCode.Accepted:
             self.cfg = dialogo.aplicar(self.cfg)
             self.cfg.normalize()

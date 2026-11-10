@@ -254,6 +254,42 @@ class MoverReorganizarTest(BibliotecaBase):
         self.assertTrue(all(f.startswith("Artista ") for f in depois), depois)
         self.assertEqual(self._baixar(URL_A)["download"], 0, "nada a rebaixar")
 
+    def test_reorganize_applies_the_current_grouping_rules(self):
+        """Mudou o agrupamento: o que já foi baixado acompanha, sem ir à rede."""
+        self._baixar(URL_A)
+        relatorio = library.reorganize(
+            self.store, self.raiz, "genre_artist_album",
+            regrupar=lambda artista, titulo: "Eletronica",
+        )
+        self.assertEqual(relatorio.moved, 3)
+        self.assertTrue(all(f.startswith("Eletronica/") for f in self._arquivos()))
+        self.assertEqual(self.store.get_item("id01").genre, "Eletronica")
+
+    def test_a_cached_answer_that_is_not_a_genre_falls_back_to_the_playlist(self):
+        """"Bollywood" já gravado no catálogo volta para o gênero de reserva."""
+        self._baixar(URL_A)
+        self.store.set_tags("id02", "Artista 0", "Album", "Bollywood", 2)
+        library.reorganize(self.store, self.raiz, "genre_artist_album",
+                           regrupar=lambda artista, titulo: "" if titulo == "Musica 2" else None)
+        self.assertEqual(self.store.get_item("id02").genre, "Viagem")
+        self.assertFalse(any("Bollywood" in f for f in self._arquivos()))
+
+    def test_one_artist_one_genre_when_asked(self):
+        self._baixar(URL_A)
+        self.store.set_tags("id01", "Artista 1", "Album", "Pop", 1)
+        self.store.set_tags("id03", "Artista 1", "Album", "Rock", 3)
+        library.reorganize(self.store, self.raiz, "genre_artist_album", por_artista=True)
+        self.assertEqual(self.store.get_item("id03").genre, "Pop", "empate: o que chegou primeiro")
+        pastas = {self._arquivo_de(v).relative_to(self.raiz).parts[0] for v in ("id01", "id03")}
+        self.assertEqual(pastas, {"Pop"})
+
+    def test_without_the_option_artists_keep_their_own_genres(self):
+        self._baixar(URL_A)
+        self.store.set_tags("id01", "Artista 1", "Album", "Pop", 1)
+        self.store.set_tags("id03", "Artista 1", "Album", "Rock", 3)
+        library.reorganize(self.store, self.raiz, "genre_artist_album")
+        self.assertEqual(self.store.get_item("id03").genre, "Rock")
+
     def test_reorganize_leaves_pinned_tracks_alone(self):
         self._baixar(URL_A)
         library.move_to_folder(self.store, self.raiz, ["id01"], "Fixa")
@@ -399,6 +435,22 @@ class TagsDeVerdadeTest(unittest.TestCase):
                 tags = library.read_tags(arquivo)
                 self.assertEqual(tags.get("artist"), "Alan Walker")
                 self.assertEqual(tags.get("genre"), "Eletronica")
+
+    def test_genre_tag_is_rewritten_in_every_format(self):
+        pasta = pathlib.Path(tempfile.mkdtemp())
+        for extensao in ("mp3", "m4a", "opus", "flac"):
+            arquivo = pasta / f"g.{extensao}"
+            subprocess.run(
+                [_ffmpeg(), "-loglevel", "error", "-f", "lavfi", "-i",
+                 "sine=frequency=440:duration=1", "-metadata", "genre=Bollywood",
+                 "-metadata", "title=Faixa", str(arquivo)],
+                check=True,
+            )
+            with self.subTest(formato=extensao):
+                self.assertTrue(library.write_genre(arquivo, "Pop"))
+                lidas = library.read_tags(arquivo)
+                self.assertEqual(lidas["genre"], "Pop")
+                self.assertEqual(lidas["title"], "Faixa", "o resto da tag não pode se perder")
 
     def test_non_audio_and_untagged_files_return_none(self):
         pasta = pathlib.Path(tempfile.mkdtemp())

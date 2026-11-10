@@ -129,6 +129,23 @@ def ler_id_do_dublê(caminho):
     return texto[6:] if texto.startswith("PDMID:") else None
 
 
+class ConfigTest(unittest.TestCase):
+    def test_text_booleans_from_qsettings_are_converted(self):
+        cfg = AppConfig.from_dict({"embed_thumbnail": "false", "ascii_only": "true",
+                                   "genre_per_artist": "false", "group_subgenres": 0})
+        self.assertIs(cfg.embed_thumbnail, False)
+        self.assertIs(cfg.ascii_only, True)
+        self.assertIs(cfg.genre_per_artist, False)
+        self.assertIs(cfg.group_subgenres, False)
+
+    def test_unusable_genre_rules_fall_back_to_the_default(self):
+        cfg = AppConfig.from_dict({"genre_groups": "isto não é uma regra"})
+        self.assertEqual(cfg.genre_groups, "")
+        self.assertIsNone(cfg.genre_group_map())
+        cfg = AppConfig.from_dict({"genre_groups": "Balada: pop"})
+        self.assertEqual(cfg.genre_group_map(), {"Balada": ("pop",)})
+
+
 class CookieErrorTypeTest(unittest.TestCase):
     def test_cookie_error_is_its_own_type(self):
         self.assertTrue(issubclass(CookieError, Exception))
@@ -570,6 +587,7 @@ class EngineFlowTest(unittest.TestCase):
     def test_online_mode_falls_back_when_nothing_is_found(self):
         """Sem resposta: metadados primeiro, nome da playlist depois."""
         self.cfg.genre_source = "online"
+        self.cfg.genre_per_artist = False  # aqui o que se testa é a precedência das fontes
         FakeLookup.resposta = None
         self._run()
         files = sorted(p.relative_to(self.tmp).as_posix() for p in pathlib.Path(self.tmp).rglob("*.m4a"))
@@ -662,8 +680,17 @@ class EngineFlowTest(unittest.TestCase):
         self.assertEqual(len(files), 2, f"uma faixa foi perdida: {files}")
         self.assertEqual(self.store.stats().done, 2)
 
+    def test_one_artist_ends_up_in_one_genre_folder(self):
+        """Faixa 1 diz Rock, as outras não dizem nada: não racha o artista em duas pastas."""
+        self.cfg.genre_source = "online"
+        FakeLookup.resposta = None
+        self._run()
+        files = sorted(p.relative_to(self.tmp).as_posix() for p in pathlib.Path(self.tmp).rglob("*.m4a"))
+        self.assertTrue(all(f.startswith("Rock/Artista/") for f in files), files)
+
     def test_metadata_mode_prefers_the_track_genre(self):
         self.cfg.genre_source = "metadata"
+        self.cfg.genre_per_artist = False
         self._run()
         files = sorted(p.relative_to(self.tmp).as_posix() for p in pathlib.Path(self.tmp).rglob("*.m4a"))
         # A faixa 1 tem genre="Rock"; a 2 não tem e cai no nome da playlist.

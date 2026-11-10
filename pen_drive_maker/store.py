@@ -418,6 +418,24 @@ class QueueStore:
             ).fetchone()
         return self._row_to_item(row) if row else None
 
+    def artist_genre(self, artist: str) -> Optional[str]:
+        """Gênero que predomina entre as faixas já baixadas deste artista.
+
+        Empate: o que chegou primeiro. É o que mantém um artista numa pasta
+        só, em vez de uma faixa em Pop e outra em Eletronica.
+        """
+        artista = (artist or "").strip().lower()
+        if not artista:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT genre FROM items WHERE status = ? AND genre != '' "
+                "AND LOWER(artist) = ? GROUP BY genre "
+                "ORDER BY COUNT(*) DESC, MIN(rowid) LIMIT 1",
+                (STATUS_DONE, artista),
+            ).fetchone()
+        return row["genre"] if row else None
+
     def filepath_owner(self, stem: str) -> Optional[str]:
         """Quem já ocupa um arquivo com este caminho (absoluto, sem extensão).
 

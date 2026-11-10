@@ -16,7 +16,7 @@ import os
 import re
 import shutil
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional
@@ -25,6 +25,7 @@ from typing import Callable, Dict, Iterable, List, Optional
 # o programa deve falhar ao abrir. Escondido num try, todo arquivo pareceria
 # "sem origem" e músicas movidas seriam baixadas de novo, em silêncio.
 import mutagen
+import mutagen.mp3
 
 from .organizer import TrackTags, build_relative_path
 from .store import STATE_DIRNAME, STATUS_DONE, STATUS_EXCLUDED, QueueStore, file_present
@@ -313,6 +314,24 @@ class ReorgReport:
     missing: int = 0
 
 
+def write_genre(path: Path, genero: str) -> bool:
+    """Regrava só a tag de gênero (mp3, m4a, opus, ogg, flac). False se não deu."""
+    try:
+        arquivo = mutagen.File(str(path), easy=True)
+        if arquivo is None:
+            return False
+        if arquivo.tags is None:
+            arquivo.add_tags()
+        arquivo["genre"] = [genero]
+        if isinstance(arquivo, mutagen.mp3.MP3):
+            arquivo.save(v2_version=3)  # a mesma versão que o resto do programa grava
+        else:
+            arquivo.save()
+        return True
+    except Exception:
+        return False
+
+
 def reorganize(
     store: QueueStore,
     root: Path,
@@ -323,20 +342,33 @@ def reorganize(
     default_album: str = "Singles",
     progresso: Progresso = None,
     stop: Optional[threading.Event] = None,
+    regrupar: Optional[Callable[[str, str], Optional[str]]] = None,
+    por_artista: bool = False,
 ) -> ReorgReport:
     """Move os arquivos já baixados para a estrutura de pastas atual.
 
     Evita rebaixar a biblioteca inteira só porque a estrutura mudou. Faixas
     fixadas (postas à mão) ficam onde estão. As tags vêm do catálogo e, se
     faltarem, do próprio arquivo — o artista e o álbum que o yt-dlp gravou.
+
+    `regrupar(artista, título)` devolve o gênero pelas regras de agrupamento
+    atuais: None = nada em cache (o gênero fica como está), "" = a resposta
+    guardada não serve como pasta (use o gênero de reserva). É como uma mudança
+    nas regras alcança o que já foi baixado.
+
+    Com `por_artista`, as faixas de cada artista passam todas para o gênero que
+    predomina entre elas. Sempre que o gênero muda, a tag dentro do arquivo é
+    regravada, para a pasta e o que o rádio mostra não divergirem.
     """
     root = Path(root)
     relatorio = ReorgReport()
     faixas = store.list_items(STATUS_DONE)
-    deixadas = []
+
+    # 1ª passada: o que cada faixa deve ser, sem mexer em nada.
+    plano = []  # (item, origem, tags)
     for indice, item in enumerate(faixas, 1):
         if _parar(stop):
-            break
+            return relatorio
         _avisar(progresso, indice, len(faixas), item.title or item.video_id)
         if item.pinned:
             relatorio.kept_pinned += 1
@@ -345,17 +377,50 @@ def reorganize(
         if origem is None or not origem.is_file():
             relatorio.missing += 1
             continue
-
         do_arquivo: Dict[str, object] = {}
         if not (item.artist and item.title and item.album):
             do_arquivo = read_tags(origem)
+        reserva = store.playlist_title_for(item.video_id) or default_genre
         tags = TrackTags(
-            genre=item.genre or store.playlist_title_for(item.video_id) or default_genre,
+            genre=item.genre or reserva,
             artist=item.artist or str(do_arquivo.get("artist", "")) or "Artista Desconhecido",
             album=item.album or str(do_arquivo.get("album", "")) or default_album,
             title=item.title or str(do_arquivo.get("title", "")) or item.video_id,
             track_number=item.track_number or do_arquivo.get("track"),  # type: ignore[arg-type]
         )
+        if regrupar is not None:
+            novo_genero = regrupar(tags.artist, tags.title)
+            if novo_genero is not None:
+                tags = replace(tags, genre=novo_genero or reserva)
+        plano.append((item, origem, tags))
+
+    if por_artista:
+        contagem: Dict[str, Dict[str, int]] = {}
+        for _item, _origem, tags in plano:
+            artista = tags.artist.strip().lower()
+            if artista != "artista desconhecido":
+                contagem.setdefault(artista, {}).setdefault(tags.genre, 0)
+                contagem[artista][tags.genre] += 1
+        predominante = {
+            # max() fica com o primeiro em caso de empate (a ordem é a de chegada)
+            artista: max(generos, key=generos.get)  # type: ignore[arg-type]
+            for artista, generos in contagem.items()
+        }
+        plano = [
+            (item, origem, replace(tags, genre=predominante.get(tags.artist.strip().lower(),
+                                                                tags.genre)))
+            for item, origem, tags in plano
+        ]
+
+    # 2ª passada: gravar o gênero novo e mover.
+    deixadas = []
+    for item, origem, tags in plano:
+        if _parar(stop):
+            break
+        if tags.genre != item.genre:
+            store.set_tags(item.video_id, tags.artist, tags.album, tags.genre,
+                           tags.track_number)
+            write_genre(origem, tags.genre)
         novo = build_relative_path(tags, ascii_only, max_len, structure) + origem.suffix
         destino = root / novo
         if destino.resolve() == origem.resolve():

@@ -419,7 +419,44 @@ caso a segunda recebe o id do vídeo no nome, e o log avisa.
   **Subgêneros são agrupados** por padrão: numa playlist de EDM, *Dance*,
   *House* e *Electronic* viram `Eletronica`, em vez de três pastas para o que
   o ouvinte trata como uma. Desligue em *Opções avançadas* para usar a
-  resposta crua.
+  resposta crua. As regras são editáveis em *Opções avançadas →* **Editar
+  agrupamento…**: uma linha por pasta, com os pedaços de nome que levam a ela.
+
+  ```
+  Eletronica: dance, house, techno, trance
+  Rock: rock, metal, punk, indie
+  (ignorar): bollywood, soundtrack, anime
+  ```
+
+  Como o casamento funciona (e o campo *Teste* da janela mostra o resultado na hora):
+
+  - só **palavras inteiras** contam: *Dancehall* não é `dance`, *Reggaeton* não
+    é `reggae`, *Música Popular Brasileira* não é `pop`;
+  - em *Dance Pop*, *Folk Rock* ou *Indie Pop* vale a **última palavra**, que
+    é o gênero de base: viram `Pop`, `Rock` e `Pop`;
+  - em *Hip-Hop/Rap* ou *Pop/Rock* vale a primeira alternativa que casar;
+  - acentos e maiúsculas não importam, e se mais de um grupo casar com a mesma
+    força, vale o que estiver mais acima na lista.
+
+  O grupo especial **`(ignorar)`** lista rótulos que dizem *de onde* a música
+  vem, e não *como ela soa* — *Bollywood*, *Soundtrack*, *Anime*. Eles nunca
+  viram pasta: a faixa usa o gênero de reserva (o nome da playlist). Um gênero
+  real ao lado do rótulo vence (*Bollywood Pop* → `Pop`).
+
+  **Gêneros que nenhum grupo reconhece** também caem na reserva, em vez de
+  criar uma pasta nova para cada rótulo estranho da internet. Quem prefere a
+  pasta com o nome devolvido liga **Manter gêneros que nenhum grupo reconhece**.
+
+  **Um artista, um gênero** (ligado por padrão): as faixas de um artista seguem
+  o gênero que já predomina na biblioteca, para ele não ficar dividido entre
+  `Pop` e `Eletronica` só porque a internet rotulou cada música de um jeito. Vale
+  para as fontes *Consultar na internet* e *Metadados da faixa*; o nome da
+  playlist e o gênero fixo são escolhas suas e não são alterados.
+
+  **Mudou as regras?** Use *Biblioteca → Aplicar estrutura atual aos arquivos…*:
+  os gêneros já consultados (em cache, sem rede) passam pelas regras novas, os
+  arquivos vão para as pastas certas e a **tag de gênero dentro de cada arquivo
+  é regravada**, para a pasta e o que o rádio mostra não divergirem.
 
   Se a consulta falhar — sem internet, serviço fora —, a faixa cai na reserva
   e o download segue. Depois de algumas falhas seguidas a consulta se desliga

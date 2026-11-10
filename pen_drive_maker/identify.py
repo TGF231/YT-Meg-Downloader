@@ -386,6 +386,11 @@ def refinar(
         if encontrado:
             tags = replace(tags, genre=encontrado)
 
+    if cfg.genre_per_artist and cfg.genre_source in ("online", "metadata"):
+        conhecido = store.artist_genre(tags.artist)
+        if conhecido:
+            tags = replace(tags, genre=conhecido)
+
     gravou = write_tags(origem, tags, f"https://www.youtube.com/watch?v={combinacao.video_id}")
 
     novo = build_relative_path(tags, cfg.ascii_only, cfg.max_component_len,
@@ -424,7 +429,8 @@ def refinar_lote(
     ler_info = ler_info or info_do_youtube(cfg)
     consulta = None
     if cfg.genre_source == "online":
-        consulta = GenreLookup(store, group=cfg.group_subgenres, log=log)
+        consulta = GenreLookup(store, group=cfg.group_subgenres, grupos=cfg.genre_group_map(),
+                              manter_desconhecidos=cfg.genre_keep_unmapped, log=log)
     seguidas = 0
     for indice, combinacao in enumerate(combinacoes, 1):
         if _parar(stop):

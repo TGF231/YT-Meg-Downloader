@@ -12,7 +12,11 @@ from pen_drive_maker.genre import (  # noqa: E402
     GenreLookup,
     artists_match,
     clean_title,
+    GRUPOS,
     group_genre,
+    groups_to_text,
+    parse_groups,
+    resolve_genre,
 )
 from pen_drive_maker.store import QueueStore  # noqa: E402
 
@@ -59,6 +63,75 @@ class GroupGenreTest(unittest.TestCase):
 
     def test_empty_stays_empty(self):
         self.assertEqual(group_genre(""), "")
+
+
+class GroupingRulesTest(unittest.TestCase):
+    """Casos que o casamento por pedaço de texto errava."""
+
+    def test_whole_words_only(self):
+        casos = {
+            "Dancehall": "Reggae",              # não é "dance"
+            "Reggaeton": "Latina",              # não é "reggae"
+            "Música Popular Brasileira": "MPB",  # não é "pop"
+            "Therapy Sessions": "Therapy Sessions",  # "rap" não está em "Therapy"
+        }
+        for bruto, esperado in casos.items():
+            self.assertEqual(group_genre(bruto), esperado, bruto)
+
+    def test_the_last_word_is_the_base_genre(self):
+        casos = {
+            "Dance Pop": "Pop", "Pop Rock": "Rock", "Folk Rock": "Rock",
+            "Indie Pop": "Pop", "Alternative Dance": "Eletronica",
+            "Latin Pop": "Pop", "Garage Rock": "Rock", "UK Garage": "Eletronica",
+            "Pop Rap": "Hip Hop", "Latin Jazz": "Jazz e Blues",
+        }
+        for bruto, esperado in casos.items():
+            self.assertEqual(group_genre(bruto), esperado, bruto)
+
+    def test_alternatives_use_the_first_that_matches(self):
+        self.assertEqual(group_genre("Pop/Rock"), "Pop")
+        self.assertEqual(group_genre("Hip-Hop/Rap"), "Hip Hop")
+        self.assertEqual(group_genre("R&B/Soul"), "R&B e Soul")
+        self.assertEqual(group_genre("Drum & Bass"), "Eletronica")
+
+    def test_accents_and_case_do_not_matter(self):
+        self.assertEqual(group_genre("FORRÓ"), "MPB")
+        self.assertEqual(group_genre("forro universitario"), "MPB")
+
+    def test_custom_groups_replace_the_defaults(self):
+        grupos = parse_groups("Balada: pop, rock\nDanca: dance, house")
+        self.assertEqual(group_genre("Pop Rock", grupos), "Balada")
+        self.assertEqual(group_genre("House", grupos), "Danca")
+        self.assertEqual(group_genre("Jazz", grupos), "Jazz")  # nada casa: fica como veio
+
+    def test_groups_round_trip_through_the_editor_text(self):
+        self.assertEqual(parse_groups(groups_to_text(GRUPOS)), {k: tuple(v) for k, v in GRUPOS.items()})
+
+    def test_parse_ignores_blank_comment_and_broken_lines(self):
+        grupos = parse_groups("# comentario\n\nsem dois pontos\nVazio:\nOk: a, b,, c")
+        self.assertEqual(grupos, {"Ok": ("a", "b", "c")})
+        self.assertEqual(parse_groups(""), {})
+
+
+class NotAGenreTest(unittest.TestCase):
+    """"Bollywood" diz de onde a música vem, não como ela soa."""
+
+    def test_film_and_origin_labels_are_not_genres(self):
+        for bruto in ("Bollywood", "Soundtrack", "Anime", "Indian", "Original Score"):
+            self.assertIsNone(resolve_genre(bruto), bruto)
+
+    def test_but_a_real_genre_next_to_the_label_wins(self):
+        self.assertEqual(resolve_genre("Bollywood Pop"), "Pop")
+        self.assertEqual(resolve_genre("Indian Classical"), "Classica")
+
+    def test_unknown_genres_fall_back_unless_asked_to_keep(self):
+        self.assertIsNone(resolve_genre("Bachata Experimental"))
+        self.assertEqual(resolve_genre("Bachata Experimental", manter_desconhecidos=True),
+                         "Bachata Experimental")
+
+    def test_empty_is_never_a_genre(self):
+        self.assertIsNone(resolve_genre(""))
+        self.assertIsNone(resolve_genre("   ", manter_desconhecidos=True))
 
 
 class ArtistsMatchTest(unittest.TestCase):

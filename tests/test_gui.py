@@ -525,6 +525,71 @@ class JanelaTest(unittest.TestCase):
         self.assertEqual(aplicado.jitter, 42.0)
         self.assertFalse(aplicado.group_subgenres)
 
+    def test_genre_groups_dialog_previews_and_saves_custom_rules(self):
+        from pen_drive_maker.genre import GRUPOS, groups_to_text
+        from pen_drive_maker.gui import GruposDeGenero
+
+        dialogo = GruposDeGenero("", self.w)
+        self.assertEqual(dialogo.editor.toPlainText(), groups_to_text(GRUPOS))
+        self.assertEqual(dialogo.texto(), "", "as regras padrão não ficam congeladas na config")
+
+        dialogo.exemplo.setText("Bollywood")
+        self.assertEqual(dialogo.resultado.text(), "Bollywood", "ignorado: mostra o original")
+        dialogo.editor.setPlainText("Balada: pop, rock\nDanca: dance, house")
+        dialogo.exemplo.setText("Dance Pop")
+        self.assertEqual(dialogo.resultado.text(), "Balada")
+        self.assertEqual(dialogo.texto(), "Balada: pop, rock\nDanca: dance, house")
+
+        dialogo._restaurar()
+        self.assertEqual(dialogo.texto(), "")
+
+    def test_options_carry_the_genre_rules_into_the_config(self):
+        from pen_drive_maker.gui import OpcoesAvancadas
+
+        cfg = self.w.config_atual()
+        cfg.genre_groups = "Balada: pop, rock"
+        dialogo = OpcoesAvancadas(cfg, self.w)
+        self.assertEqual(dialogo._genre_groups, "Balada: pop, rock")
+        dialogo.genre_per_artist.setChecked(False)
+        dialogo.genre_keep_unmapped.setChecked(True)
+        aplicado = dialogo.aplicar(cfg)
+        self.assertEqual(aplicado.genre_groups, "Balada: pop, rock")
+        self.assertFalse(aplicado.genre_per_artist)
+        self.assertTrue(aplicado.genre_keep_unmapped)
+        self.assertEqual(aplicado.genre_group_map(), {"Balada": ("pop", "rock")})
+
+    def test_options_open_when_preferences_come_back_as_text(self):
+        """O QSettings do Windows devolve "true"/"false" como texto."""
+        from pen_drive_maker.config import AppConfig
+        from pen_drive_maker.gui import OpcoesAvancadas
+
+        dados = {k: ("true" if v is True else "false" if v is False else v)
+                 for k, v in AppConfig().to_dict().items()}
+        dados["group_subgenres"] = "false"
+        cfg = AppConfig.from_dict(dados)
+        self.assertIs(cfg.group_subgenres, False, '"false" não pode virar verdadeiro')
+        dialogo = OpcoesAvancadas(cfg, self.w)
+        self.assertFalse(dialogo.group_subgenres.isChecked())
+
+    def test_a_failure_opening_the_options_is_shown_not_swallowed(self):
+        import pen_drive_maker.gui as gui
+
+        real, avisos = gui.OpcoesAvancadas, []
+
+        def quebra(*a, **k):
+            raise TypeError("falha de teste")
+
+        gui.OpcoesAvancadas = quebra
+        self.w_critical = gui.QMessageBox.critical
+        gui.QMessageBox.critical = staticmethod(lambda *a: avisos.append(a[2]))
+        try:
+            self.w.abrir_opcoes()
+        finally:
+            gui.OpcoesAvancadas = real
+            gui.QMessageBox.critical = self.w_critical
+        self.assertTrue(avisos and "falha de teste" in avisos[0])
+        self.assertIn("falha de teste", self.w.log_view.toPlainText())
+
 
 if __name__ == "__main__":
     unittest.main()
