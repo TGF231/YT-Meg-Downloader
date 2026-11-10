@@ -52,6 +52,11 @@ class AppConfig:
     max_downloads: int = 2
     max_conversions: int = 2
 
+    # Onde o áudio cru espera pela conversão. Vazio = pasta temporária do
+    # sistema (disco local): converter direto no pen drive reescreve o arquivo
+    # várias vezes na memória flash, que é lenta.
+    staging_dir: str = ""
+
     audio_format: str = "mp3"
     # Vazio = busca automática. Aceita o executável ou a pasta que o contém.
     ffmpeg_path: str = ""

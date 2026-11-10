@@ -3,6 +3,26 @@
 O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/) e o
 versionamento segue [SemVer](https://semver.org/lang/pt-BR/).
 
+## [2.5.0] - 2026-11-10
+
+### Alterado
+
+- **A conversão não roda mais dentro do pen drive.** O áudio cru e as etapas de
+  conversão (áudio, tags, capa) ficam numa pasta temporária do disco local; o
+  pen drive recebe só o arquivo pronto, uma vez. Antes cada etapa reescrevia o
+  arquivo inteiro na memória flash USB.
+- **Capa em JPEG quadrado de 500 px.** Antes o yt-dlp embutia a miniatura de
+  1280×720 convertida em PNG (0,4 a 2 MB por música). Agora o arquivo fica menor
+  (~400 KB a menos por música, nos testes), embute mais rápido e é o formato que
+  os aparelhos de carro exibem bem.
+- O log mostra onde foi o tempo de cada conversão (áudio, tags, capa e gravar no
+  destino).
+
+### Adicionado
+
+- `staging_dir` na configuração para escolher a pasta de espera; sobras com mais
+  de 3 dias são limpas ao iniciar.
+
 ## [2.4.0] - 2026-11-10
 
 ### Adicionado
@@ -420,6 +440,7 @@ Primeira versão.
 - Interface PySide6 com contadores, barras de progresso, log colorido, árvore
   da estrutura de pastas criada e controles de pausar, retomar e parar.
 
+[2.5.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v2.5.0
 [2.4.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v2.4.0
 [2.3.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v2.3.0
 [2.2.0]: https://github.com/TGF231/Pen-Drive-Maker/releases/tag/v2.2.0

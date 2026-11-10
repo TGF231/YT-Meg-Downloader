@@ -66,7 +66,9 @@ class BibliotecaBase(unittest.TestCase):
         self.store.close()
 
     def _cfg(self, raiz, url=URL_A, **extra):
+        self.stg = tempfile.mkdtemp()
         cfg = AppConfig(playlist_url=url, output_dir=str(raiz), min_interval=0.0, jitter=0.0,
+                        staging_dir=self.stg,
                         genre_source="playlist", embed_thumbnail=False, **extra)
         cfg.normalize()
         return cfg

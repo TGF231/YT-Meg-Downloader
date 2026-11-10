@@ -19,6 +19,8 @@ import queue
 import random
 import re
 import shutil
+import subprocess
+import tempfile
 import threading
 import time
 import traceback
@@ -29,6 +31,7 @@ from typing import Any, Callable, Dict, List, Optional
 from yt_dlp import YoutubeDL
 from yt_dlp.postprocessor.common import PostProcessor
 from yt_dlp.cookies import CookieLoadError, load_cookies
+from yt_dlp.utils import Popen
 
 from .config import AppConfig
 from .genre import GenreLookup
@@ -568,17 +571,40 @@ class DownloadEngine:
         )
         return opts
 
-    def _post_opts(self) -> Dict[str, Any]:
-        """Conversão, tags e capa: roda na thread de conversão, sem rede."""
+    def _post_opts(self, marcas: Optional[list] = None) -> Dict[str, Any]:
+        """Conversão, tags e capa: roda na thread de conversão, sem rede.
+
+        `marcas` recebe (instante, status, etapa) de cada etapa do yt-dlp, para
+        o log dizer onde o tempo da conversão foi.
+        """
+        def gancho(evento: Dict[str, Any]) -> None:
+            if marcas is not None:
+                marcas.append((time.monotonic(), evento.get("status"), evento.get("postprocessor")))
+            self._postprocessor_hook(evento)
+
         opts = self._base_opts()
         opts.update(
             {
                 "postprocessors": self._postprocessors(),
                 "prefer_ffmpeg": True,
-                "postprocessor_hooks": [self._postprocessor_hook],
+                "postprocessor_hooks": [gancho],
             }
         )
         return opts
+
+    @staticmethod
+    def _tempos(marcas: list) -> str:
+        """"áudio 4.1s · tags 0.2s · capa 0.6s": quanto durou cada etapa da conversão."""
+        nomes = {"ExtractAudio": "áudio", "Metadata": "tags", "EmbedThumbnail": "capa"}
+        inicio: Dict[str, float] = {}
+        gasto: Dict[str, float] = {}
+        for instante, status, etapa in marcas:
+            if status == "started":
+                inicio[etapa] = instante
+            elif status == "finished" and etapa in inicio:
+                gasto[etapa] = gasto.get(etapa, 0.0) + instante - inicio.pop(etapa)
+        return " · ".join(f"{rotulo} {gasto[chave]:.1f}s" for chave, rotulo in nomes.items()
+                          if chave in gasto)
 
     def _progress_hook(self, event: Dict[str, Any]) -> None:
         if self._stop.is_set():
@@ -798,10 +824,70 @@ class DownloadEngine:
         # O outtmpl é uma string de formatação: '%' literal precisa ser escapado.
         return str(self._base_for(tags, video_id)).replace("%", "%%") + ".%(ext)s"
 
+    def _staging_root(self) -> Path:
+        """Pasta de espera do áudio cru: disco local, não o pen drive.
+
+        Converter direto no pen drive escreve o arquivo inteiro de novo a cada
+        etapa (extrair áudio, tags, capa), e a memória flash USB é lenta nisso.
+        Só o resultado final é gravado lá, uma vez.
+        """
+        if self.cfg.staging_dir.strip():
+            base = Path(self.cfg.staging_dir).expanduser()
+        else:
+            base = Path(tempfile.gettempdir()) / "PenDriveMaker"
+        raiz = base / "staging"
+        try:
+            raiz.mkdir(parents=True, exist_ok=True)
+            return raiz
+        except OSError:
+            # Sem permissão no temporário: volta para dentro da biblioteca.
+            alternativa = Path(self.cfg.output_dir).expanduser().resolve() / STATE_DIRNAME / "staging"
+            alternativa.mkdir(parents=True, exist_ok=True)
+            return alternativa
+
     def _staging_dir(self, video_id: str) -> Path:
-        """Onde o áudio cru espera pela conversão (fora da biblioteca, oculto)."""
-        raiz = Path(self.cfg.output_dir).expanduser().resolve()
-        return raiz / STATE_DIRNAME / "staging" / video_id
+        return self._staging_root() / video_id
+
+    def _limpar_staging_antigo(self, dias: float = 3.0) -> None:
+        """Sobras de execuções interrompidas, esquecidas há dias, não ficam para sempre."""
+        limite = time.time() - dias * 86400
+        try:
+            for pasta in self._staging_root().iterdir():
+                if pasta.is_dir() and pasta.stat().st_mtime < limite:
+                    shutil.rmtree(pasta, ignore_errors=True)
+        except OSError:
+            pass
+
+    def _preparar_capa(self, result: Dict[str, Any], destino: Path) -> None:
+        """Capa de 500x500 em JPEG, no lugar da imagem original do YouTube.
+
+        A miniatura vem em 1280x720 (WebP) e o yt-dlp a converteria em PNG:
+        1 a 2 MB por música, lento de embutir e pesado para o pen drive, e muitos
+        aparelhos de carro nem exibem capas grandes. Corta o quadrado central
+        (a arte do álbum fica no meio) e reduz.
+        """
+        capas = result.get("thumbnails") or []
+        if not capas or not capas[-1].get("filepath") or not self._ffmpeg_path:
+            return
+        origem = Path(capas[-1]["filepath"])
+        if not origem.is_file():
+            return
+        jpg = destino / "capa.jpg"
+        comando = [
+            self._ffmpeg_path, "-y", "-loglevel", "error", "-i", str(origem),
+            "-vf", "crop='min(iw,ih)':'min(iw,ih)',scale='min(500,iw)':-2",
+            "-q:v", "3", "-frames:v", "1", str(jpg),
+        ]
+        try:
+            _out, erro, codigo = Popen.run(comando, text=True, stdout=subprocess.PIPE,
+                                           stderr=subprocess.PIPE)
+        except OSError as exc:
+            self._log("debug", f"Capa não reduzida: {exc}")
+            return
+        if codigo == 0 and jpg.is_file() and jpg.stat().st_size > 0:
+            capas[-1]["filepath"] = str(jpg)
+        else:
+            self._log("debug", f"Capa não reduzida (ffmpeg {codigo}): {str(erro).strip()[:200]}")
 
     def _fetch(self, item: QueueItem, position: int, total: int) -> "_Job":
         """Etapa de rede: metadados e áudio cru. A conversão fica para outra thread."""
@@ -900,8 +986,17 @@ class DownloadEngine:
         entrada = dict(job.result)
         if self.cfg.embed_metadata:
             _TagInjector(self._campos_de_tag(tags, item)).run(entrada)
-        with YoutubeDL(self._post_opts()) as ydl:
+        if self.cfg.embed_thumbnail:
+            inicio_capa = time.monotonic()
+            self._preparar_capa(entrada, job.staging)
+            tempo_capa = time.monotonic() - inicio_capa
+        else:
+            tempo_capa = 0.0
+        marcas: list = []
+        inicio_pos = time.monotonic()
+        with YoutubeDL(self._post_opts(marcas)) as ydl:
             saida = ydl.post_process(job.raw_path, entrada)
+        tempo_pos = time.monotonic() - inicio_pos
         produzido = Path(saida["filepath"])
         if not produzido.is_file():
             raise RuntimeError("A conversão não gerou arquivo.")
@@ -920,8 +1015,17 @@ class DownloadEngine:
                 # sobrescrito; o da própria faixa, ao baixar de novo, é substituído.
                 destino = destino.with_name(f"{destino.stem} [{item.video_id}]{destino.suffix}")
             destino.parent.mkdir(parents=True, exist_ok=True)
+            inicio_mover = time.monotonic()
             shutil.move(str(produzido), str(destino))
+            tempo_mover = time.monotonic() - inicio_mover
         shutil.rmtree(job.staging, ignore_errors=True)
+        detalhe = self._tempos(marcas)
+        self._log("info", (
+            f"Conversão: {tempo_pos + tempo_capa:.1f}s"
+            + (f" ({detalhe}" + (f" · capa reduzida {tempo_capa:.1f}s" if tempo_capa else "") + ")"
+               if detalhe else "")
+            + f" · gravar no destino {tempo_mover:.1f}s"
+        ))
         return str(destino), tags
 
     @staticmethod
@@ -1020,6 +1124,7 @@ class DownloadEngine:
             raiz_existia = raiz.is_dir()
             raiz.mkdir(parents=True, exist_ok=True)
             self.sync_with_disk(raiz_existia)
+            self._limpar_staging_antigo()
             self._verify_environment()
             self._verify_cookies()
             self._extract_playlist(force=force_reextract)

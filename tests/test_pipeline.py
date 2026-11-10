@@ -73,8 +73,42 @@ class PipelineTest(BibliotecaBase):
         self._baixar()
         sobras = [p for p in self.raiz.rglob("*") if p.is_file() and p.suffix == ".webm"]
         self.assertEqual(sobras, [])
-        staging = self.raiz / ".pen-drive-maker" / "staging"
+        staging = pathlib.Path(self.stg) / "staging"
         self.assertEqual([p for p in staging.rglob("*") if p.is_file()] if staging.exists() else [], [])
+
+    def test_staging_is_outside_the_library_so_the_pen_drive_is_written_once(self):
+        motor = self._motor()
+        pasta = motor._staging_dir("abc")
+        self.assertNotIn(self.raiz.resolve(), pasta.resolve().parents)
+        self.assertIn(pathlib.Path(self.stg).resolve(), pasta.resolve().parents)
+
+    def test_staging_falls_back_to_the_library_when_the_temp_dir_is_unusable(self):
+        arquivo = pathlib.Path(self.stg) / "nao_e_pasta"
+        arquivo.write_text("x")
+        cfg = self._cfg(self.raiz, URL_A)
+        cfg.staging_dir = str(arquivo)
+        motor = DownloadEngine(cfg, self.store, EngineCallbacks())
+        self.assertIn(self.raiz.resolve(), motor._staging_dir("abc").resolve().parents)
+
+    def test_old_staging_leftovers_are_cleaned_but_recent_ones_are_kept(self):
+        import os
+
+        motor = self._motor()
+        antiga, recente = motor._staging_dir("velha"), motor._staging_dir("nova")
+        for pasta in (antiga, recente):
+            pasta.mkdir(parents=True)
+            (pasta / "audio.webm").write_bytes(b"x")
+        velho = time.time() - 10 * 86400
+        os.utime(antiga, (velho, velho))
+        motor._limpar_staging_antigo()
+        self.assertFalse(antiga.exists())
+        self.assertTrue(recente.exists(), "pode ser uma conversão em andamento ou retomável")
+
+    def test_the_log_says_where_the_conversion_time_went(self):
+        self._baixar()
+        linhas = [m for _n, m in self.logs if m.startswith("Conversão:")]
+        self.assertEqual(len(linhas), 3)
+        self.assertTrue(all("gravar no destino" in m for m in linhas), linhas)
 
     def test_stopping_still_finishes_what_was_already_downloaded(self):
         FakeYDL.porta_pos = threading.Event()
@@ -279,6 +313,20 @@ class NextPendingTest(BibliotecaBase):
         self.assertIsNone(self.store.next_pending(exclude=["id01", "id02"]))
 
 
+def _dimensoes_jpeg(dados: bytes):
+    """(largura, altura) lidas do cabeçalho SOF do JPEG; sem depender do Pillow."""
+    i = 2
+    while i + 9 < len(dados):
+        if dados[i] != 0xFF:
+            i += 1
+            continue
+        marcador = dados[i + 1]
+        if marcador in (0xC0, 0xC1, 0xC2):
+            return (dados[i + 7] << 8) | dados[i + 8], (dados[i + 5] << 8) | dados[i + 6]
+        i += 2 + ((dados[i + 2] << 8) | dados[i + 3])
+    return None
+
+
 def _ffmpeg():
     import os
     import shutil
@@ -322,8 +370,9 @@ class ConversaoDeVerdadeTest(unittest.TestCase):
             subprocess.run([ff, "-loglevel", "error", "-f", "lavfi", "-i",
                             "sine=frequency=440:duration=1", "-c:a", "libopus", str(cru)],
                            check=True)
+            # 16:9 como a miniatura do YouTube: a arte quadrada fica no meio
             subprocess.run([ff, "-loglevel", "error", "-f", "lavfi", "-i",
-                            "color=c=red:s=64x64", "-frames:v", "1", str(capa)], check=True)
+                            "testsrc2=s=1280x720", "-frames:v", "1", str(capa)], check=True)
             info = {"id": vid, "title": "Faded", "artist": "Alan Walker", "album": "Different World",
                     "track_number": 3, "ext": "webm", "extractor_key": "Youtube",
                     "webpage_url": f"https://www.youtube.com/watch?v={vid}"}
@@ -345,8 +394,12 @@ class ConversaoDeVerdadeTest(unittest.TestCase):
         lidas = library.read_tags(final)
         self.assertEqual((lidas["title"], lidas["artist"], lidas["album"], lidas["track"]),
                          ("Faded", "Alan Walker", "Different World", 3))
-        self.assertTrue(any(k.startswith("APIC") for k in mutagen.File(str(final)).tags),
-                        "a capa deveria estar embutida")
+        capas = [v for k, v in mutagen.File(str(final)).tags.items() if k.startswith("APIC")]
+        self.assertTrue(capas, "a capa deveria estar embutida")
+        imagem = capas[0].data
+        self.assertEqual(imagem[:2], b"\xff\xd8", "a capa deveria ser JPEG, não PNG")
+        self.assertEqual(_dimensoes_jpeg(imagem), (500, 500), "quadrado de 500 px")
+        self.assertLess(len(imagem), 150_000)
 
 
 if __name__ == "__main__":

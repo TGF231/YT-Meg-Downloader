@@ -59,9 +59,13 @@ estão convertendo; a barra **Playlist** mostra `feitas/total`.
 - Um **bloqueio** detectado por uma vaga pausa **todas**: o backoff vale para o
   programa inteiro. Um erro fatal (cookies, ambiente, bloqueios demais) encerra
   todas as vagas.
-- O áudio cru espera em `.pen-drive-maker/staging/` (pasta oculta, fora da
-  biblioteca) e só aparece na estrutura de pastas quando está pronto. Uma queda
-  no meio nunca deixa um arquivo pela metade entre as suas músicas.
+- O áudio cru espera numa pasta **temporária do disco local** (não no pen drive) e só
+  aparece na estrutura de pastas quando está pronto. Converter direto no pen
+  drive reescreveria o arquivo inteiro a cada etapa (áudio, tags, capa) na memória
+  flash, que é lenta; assim o pen drive recebe só o resultado final, uma vez. Uma
+  queda no meio nunca deixa um arquivo pela metade entre as suas músicas, e sobras
+  com mais de 3 dias são limpas sozinhas. Dá para trocar a pasta com `staging_dir`
+  na configuração.
 - A fila entre as duas etapas é curta: se a conversão atrasar, os downloads
   esperam, em vez de encher o disco de áudio cru.
 - **Parar** (ou um bloqueio) não perde trabalho: o que já foi baixado termina de
@@ -147,6 +151,24 @@ fica em *Ferramentas → Opções avançadas*. O botão *Tema escuro* alterna a
 aparência e a escolha fica salva.
 
 As configurações ficam salvas entre execuções (`QSettings`).
+
+### Por que a conversão demora (e como o log mostra)
+
+Cada música passa por 3 etapas no `ffmpeg`: **extrair o áudio** (reencodar para
+MP3/M4A — a única realmente pesada, proporcional à duração e ao processador),
+**gravar as tags** e **embutir a capa** (cópias rápidas). Cada faixa lança cerca
+de 6 processos `ffmpeg`, e no Windows o antivírus pode inspecionar cada um. O log
+diz onde o tempo foi, faixa a faixa:
+
+```
+Conversão: 4.2s (áudio 3.1s · tags 0.2s · capa 0.4s · capa reduzida 0.3s) · gravar no destino 1.9s
+```
+
+Se *gravar no destino* for o maior número, o gargalo é o pen drive; se for
+*áudio*, é o processador (use **M4A** ou **Melhor original** para pular a
+reconversão, ou mais conversões simultâneas). A capa é reduzida para um JPEG
+quadrado de 500 px (antes: PNG 1280×720, ~0,4 a 2 MB por música), que é também o
+que os aparelhos de carro exibem bem.
 
 ### Cookies
 
