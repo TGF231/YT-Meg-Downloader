@@ -3,7 +3,7 @@
 Ferramenta gráfica (PySide6) para baixar playlists grandes do YouTube Music
 usando a **API Python do `yt-dlp`**, sem disparar o bloqueio do servidor que
 costuma travar outras ferramentas por volta de 500 músicas — e já organizando
-os arquivos na estrutura de pastas de um pen drive automotivo.
+os arquivos na estrutura de pastas.
 
 ```
 <saída>/
